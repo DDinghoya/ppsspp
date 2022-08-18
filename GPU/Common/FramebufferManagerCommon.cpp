@@ -559,7 +559,10 @@ void FramebufferManagerCommon::CopyToDepthFromOverlappingFramebuffers(VirtualFra
 		} else if (source.channel == RASTER_COLOR) {
 			VirtualFramebuffer *src = source.vfb;
 			// Copying color to depth.
-			BlitUsingRaster(src->fbo, 0.0f, 0.0f, src->renderWidth, src->renderHeight, dest->fbo, 0.0f, 0.0f, dest->renderWidth, dest->renderHeight, false, DRAW2D_565_TO_DEPTH, "565_to_depth");
+			BlitUsingRaster(
+				src->fbo, 0.0f, 0.0f, src->renderWidth, src->renderHeight,
+				dest->fbo, 0.0f, 0.0f, src->renderWidth, src->renderHeight,
+				false, DRAW2D_565_TO_DEPTH_DESWIZZLE, "565_to_depth");
 		}
 	}
 
@@ -2338,6 +2341,7 @@ void FramebufferManagerCommon::DeviceLost() {
 	DoRelease(draw2DPipelineColor_);
 	DoRelease(draw2DPipelineDepth_);
 	DoRelease(draw2DPipeline565ToDepth_);
+	DoRelease(draw2DPipeline565ToDepthDeswizzle_);
 
 	draw_ = nullptr;
 }
