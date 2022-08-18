@@ -148,7 +148,6 @@ struct SceUtilityOskParams
 	SceUtilityOskState_le state;
 	// Maybe just padding?
 	s32_le unk_60;
-
 };
 
 // Internal enum, not from PSP.
@@ -245,7 +244,7 @@ private:
 	std::string oskIntext;
 	std::string oskOuttext;
 
-	int selectedChar;
+	int selectedChar = 0;
 	std::u16string inputChars;
 	OskKeyboardDisplay currentKeyboard;
 	OskKeyboardLanguage currentKeyboardLanguage;
@@ -255,6 +254,6 @@ private:
 	PSPOskNativeStatus nativeStatus_ = PSPOskNativeStatus::IDLE;
 	std::string nativeValue_;
 
-	int i_level; // for Korean Keyboard support
-	int i_value[3]; // for Korean Keyboard support
+	int i_level = 0; // for Korean Keyboard support
+	int i_value[3]{}; // for Korean Keyboard support
 };
