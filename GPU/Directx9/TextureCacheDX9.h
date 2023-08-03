@@ -24,43 +24,43 @@
 #include "GPU/Common/TextureCacheCommon.h"
 
 struct VirtualFramebuffer;
-class DepalShaderCache;
+class TextureShaderCache;
 
 class FramebufferManagerDX9;
 class ShaderManagerDX9;
 
 class TextureCacheDX9 : public TextureCacheCommon {
 public:
-	TextureCacheDX9(Draw::DrawContext *draw);
+	TextureCacheDX9(Draw::DrawContext *draw, Draw2D *draw2D);
 	~TextureCacheDX9();
 
 	void StartFrame() override;
 
 	void SetFramebufferManager(FramebufferManagerDX9 *fbManager);
 
-	void ForgetLastTexture() override {
-		InvalidateLastTexture();
-	}
-	void InvalidateLastTexture() override;
+	void ForgetLastTexture() override;
 
-	bool GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level) override;
+	bool GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level, bool *isFramebuffer) override;
+
+	void DeviceLost() override { draw_ = nullptr; }
+	void DeviceRestore(Draw::DrawContext *draw) override { draw_ = draw; }
 
 protected:
 	void BindTexture(TexCacheEntry *entry) override;
 	void Unbind() override;
 	void ReleaseTexture(TexCacheEntry *entry, bool delete_them) override;
-	void BindAsClutTexture(Draw::Texture *tex) override;
+	void BindAsClutTexture(Draw::Texture *tex, bool smooth) override;
+	void *GetNativeTextureView(const TexCacheEntry *entry) override;
 
 private:
 	void ApplySamplingParams(const SamplerCacheKey &key) override;
 
 	D3DFORMAT GetDestFormat(GETextureFormat format, GEPaletteFormat clutFormat) const;
-	static CheckAlphaResult CheckAlpha(const u32 *pixelData, u32 dstFmt, int w);
 	void UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBase, bool clutIndexIsSimple) override;
 
 	void BuildTexture(TexCacheEntry *const entry) override;
 
-	LPDIRECT3DBASETEXTURE9 &DxTex(TexCacheEntry *entry) {
+	LPDIRECT3DBASETEXTURE9 &DxTex(const TexCacheEntry *entry) const {
 		return *(LPDIRECT3DBASETEXTURE9 *)&entry->texturePtr;
 	}
 

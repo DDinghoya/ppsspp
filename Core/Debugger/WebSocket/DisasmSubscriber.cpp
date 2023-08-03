@@ -36,7 +36,7 @@ public:
 	WebSocketDisasmState() {
 		disasm_.setCpu(currentDebugMIPS);
 	}
-	~WebSocketDisasmState() override {
+	~WebSocketDisasmState() {
 		disasm_.clear();
 	}
 
@@ -263,7 +263,7 @@ void WebSocketDisasmState::WriteBranchGuide(JsonWriter &json, const BranchLine &
 void WebSocketDisasmState::Base(DebuggerRequest &req) {
 	JsonWriter &json = req.Respond();
 	Reporting::NotifyDebugger();
-	json.writeString("addressHex", StringFromFormat("%016llx", (uintptr_t)Memory::base));
+	json.writeString("addressHex", StringFromFormat("%016llx", (uint64_t)(uintptr_t)Memory::base));
 }
 
 // Disassemble a range of memory as CPU instructions (memory.disasm)
@@ -379,7 +379,7 @@ void WebSocketDisasmState::Disasm(DebuggerRequest &req) {
 	json.pop();
 }
 
-// Search disassembly for some text (cpu.searchDisasm)
+// Search disassembly for some text (memory.searchDisasm)
 //
 // Parameters:
 //  - thread: optional number indicating the thread id (may not affect search much.)
@@ -461,7 +461,7 @@ void WebSocketDisasmState::SearchDisasm(DebuggerRequest &req) {
 		json.writeNull("address");
 }
 
-// Assemble an instruction (cpu.assemble)
+// Assemble an instruction (memory.assemble)
 //
 // Parameters:
 //  - address: number indicating the address to write to.
@@ -482,7 +482,7 @@ void WebSocketDisasmState::Assemble(DebuggerRequest &req) {
 		return;
 
 	if (!MIPSAsm::MipsAssembleOpcode(code.c_str(), currentDebugMIPS, address))
-		return req.Fail(StringFromFormat("Could not assemble: %s", ConvertWStringToUTF8(MIPSAsm::GetAssembleError()).c_str()));
+		return req.Fail(StringFromFormat("Could not assemble: %s", MIPSAsm::GetAssembleError().c_str()));
 
 	JsonWriter &json = req.Respond();
 	Reporting::NotifyDebugger();

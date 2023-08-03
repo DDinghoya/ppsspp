@@ -3,8 +3,6 @@
 #include <cstring>
 
 #include "Common/GPU/Shader.h"
-#include "GPU/ge_constants.h"
-#include "GPU/GPUCommon.h"
 #include "Common/Data/Collections/Slice.h"
 
 #include "Common/GPU/thin3d.h"
@@ -22,12 +20,6 @@ struct InputDef {
 	int semantic;
 };
 
-struct UniformDef {
-	const char *type;
-	const char *name;
-	int index;
-};
-
 struct VaryingDef {
 	const char *type;
 	const char *name;
@@ -36,15 +28,19 @@ struct VaryingDef {
 	const char *precision;
 };
 
-enum FSFlags {
-	FSFLAG_NONE = 0,
-	FSFLAG_WRITEDEPTH = 1,
+enum class ShaderWriterFlags {
+	NONE = 0,
+	FS_WRITE_DEPTH = 1,
+	FS_AUTO_STEREO = 2,  // Automatically indexes makes samplers tagged with `array` by gl_ViewIndex. Useful for stereo rendering.
 };
+ENUM_CLASS_BITOPS(ShaderWriterFlags);
 
 class ShaderWriter {
 public:
-	ShaderWriter(char *buffer, const ShaderLanguageDesc &lang, ShaderStage stage, const char **gl_extensions = nullptr, size_t num_gl_extensions = 0) : p_(buffer), lang_(lang), stage_(stage) {
-		Preamble(gl_extensions, num_gl_extensions);
+	// Extensions are supported for both OpenGL ES and Vulkan (though of course, they're different).
+	ShaderWriter(char *buffer, const ShaderLanguageDesc &lang, ShaderStage stage, Slice<const char *> extensions = Slice<const char *>(), ShaderWriterFlags flags = ShaderWriterFlags::NONE) : p_(buffer), lang_(lang), stage_(stage), flags_(flags) {
+		buffer[0] = '\0';
+		Preamble(extensions);
 	}
 	ShaderWriter(const ShaderWriter &) = delete;
 
@@ -79,20 +75,35 @@ public:
 	void HighPrecisionFloat();
 	void LowPrecisionFloat();
 
+	// NOTE: samplers must live for the rest of ShaderWriter's lifetime. No way to express that in C++ though :(
 	void DeclareSamplers(Slice<SamplerDef> samplers);
 
-	void ConstFloat(const char *name, float value);
+	// Same as DeclareSamplers, but doesn't actually declare them.
+	// This is currently only required by FragmentShaderGenerator.
+	void ApplySamplerMetadata(Slice<SamplerDef> samplers);
 
-	ShaderWriter &SampleTexture2D(const char *sampName, const char *uv);
+	void ConstFloat(const char *name, float value);
+	void SetFlags(ShaderWriterFlags flags) { flags_ |= flags; }
+	void SetTexBindingBase(int base) { texBindingBase_ = base; }
+
+	ShaderWriter &SampleTexture2D(const char *texName, const char *uv);
+	ShaderWriter &SampleTexture2DOffset(const char *texName, const char *uv, int offX, int offY);
+	ShaderWriter &LoadTexture2D(const char *texName, const char *integer_uv, int level);
+	ShaderWriter &GetTextureSize(const char *szVariable, const char *texName);
 
 	// Simple shaders with no special tricks.
 	void BeginVSMain(Slice<InputDef> inputs, Slice<UniformDef> uniforms, Slice<VaryingDef> varyings);
-	void BeginFSMain(Slice<UniformDef> uniforms, Slice<VaryingDef> varyings, FSFlags flags);
+	void BeginFSMain(Slice<UniformDef> uniforms, Slice<VaryingDef> varyings);
+	void BeginGSMain(Slice<VaryingDef> varyings, Slice<VaryingDef> outVaryings);
 
 	// For simple shaders that output a single color, we can deal with this generically.
 	void EndVSMain(Slice<VaryingDef> varyings);
-	void EndFSMain(const char *vec4_color_variable, FSFlags flags);
+	void EndFSMain(const char *vec4_color_variable);
+	void EndGSMain();
 
+	const ShaderLanguageDesc &Lang() const {
+		return lang_;
+	}
 
 	void Rewind(size_t offset) {
 		p_ -= offset;
@@ -105,12 +116,17 @@ public:
 
 private:
 	// Several of the shader languages ignore samplers, beware of that.
-	void DeclareSampler2D(const char *name, int binding);
-	void DeclareTexture2D(const char *name, int binding);
+	void DeclareSampler2D(const SamplerDef &def);
+	void DeclareTexture2D(const SamplerDef &def);
+	const SamplerDef *GetSamplerDef(const char *name) const;
 
-	void Preamble(const char **gl_extensions, size_t num_gl_extensions);
+	void Preamble(Slice<const char *> extensions);
 
 	char *p_;
 	const ShaderLanguageDesc &lang_;
 	const ShaderStage stage_;
+	Slice<SamplerDef> samplers_;
+	ShaderWriterFlags flags_ = ShaderWriterFlags::NONE;
+	Slice<SamplerDef> samplerDefs_;
+	int texBindingBase_ = 1;
 };

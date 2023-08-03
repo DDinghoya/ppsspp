@@ -44,7 +44,7 @@ VkShaderModule CompileShaderModule(VulkanContext *vulkan, VkShaderStageFlagBits 
 		return VK_NULL_HANDLE;
 	} else {
 		VkShaderModule module;
-		if (vulkan->CreateShaderModule(spirv, &module)) {
+		if (vulkan->CreateShaderModule(spirv, &module, stage == VK_SHADER_STAGE_VERTEX_BIT ? "system_vs" : "system_fs")) {
 			return module;
 		} else {
 			return VK_NULL_HANDLE;
@@ -52,11 +52,10 @@ VkShaderModule CompileShaderModule(VulkanContext *vulkan, VkShaderStageFlagBits 
 	}
 }
 
-VulkanComputeShaderManager::VulkanComputeShaderManager(VulkanContext *vulkan) : vulkan_(vulkan), pipelines_(8) {
-}
+VulkanComputeShaderManager::VulkanComputeShaderManager(VulkanContext *vulkan) : vulkan_(vulkan), pipelines_(8) {}
 VulkanComputeShaderManager::~VulkanComputeShaderManager() {}
 
-void VulkanComputeShaderManager::InitDeviceObjects() {
+void VulkanComputeShaderManager::InitDeviceObjects(Draw::DrawContext *draw) {
 	VkPipelineCacheCreateInfo pc{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
 	VkResult res = vkCreatePipelineCache(vulkan_->GetDevice(), &pc, nullptr, &pipelineCache_);
 	_assert_(VK_SUCCESS == res);
@@ -96,6 +95,7 @@ void VulkanComputeShaderManager::InitDeviceObjects() {
 
 	for (int i = 0; i < ARRAY_SIZE(frameData_); i++) {
 		frameData_[i].descPool.Create(vulkan_, dp, dpTypes);
+		frameData_[i].descPoolUsed = false;
 	}
 
 	VkPushConstantRange push = {};
@@ -106,8 +106,9 @@ void VulkanComputeShaderManager::InitDeviceObjects() {
 	VkPipelineLayoutCreateInfo pl = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	pl.pPushConstantRanges = &push;
 	pl.pushConstantRangeCount = 1;
-	pl.setLayoutCount = 1;
-	pl.pSetLayouts = &descriptorSetLayout_;
+	VkDescriptorSetLayout setLayouts[1] = { descriptorSetLayout_ };
+	pl.setLayoutCount = ARRAY_SIZE(setLayouts);
+	pl.pSetLayouts = setLayouts;
 	pl.flags = 0;
 	res = vkCreatePipelineLayout(device, &pl, nullptr, &pipelineLayout_);
 	_assert_(VK_SUCCESS == res);
@@ -136,10 +137,11 @@ void VulkanComputeShaderManager::DestroyDeviceObjects() {
 VkDescriptorSet VulkanComputeShaderManager::GetDescriptorSet(VkImageView image, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range, VkBuffer buffer2, VkDeviceSize offset2, VkDeviceSize range2) {
 	int curFrame = vulkan_->GetCurFrame();
 	FrameData &frameData = frameData_[curFrame];
-	VkDescriptorSet desc = frameData.descPool.Allocate(1, &descriptorSetLayout_);
+	frameData.descPoolUsed = true;
+	VkDescriptorSet desc = frameData.descPool.Allocate(1, &descriptorSetLayout_, "compute_descset");
 	_assert_(desc != VK_NULL_HANDLE);
 
-	VkWriteDescriptorSet writes[2]{};
+	VkWriteDescriptorSet writes[3]{};
 	int n = 0;
 	VkDescriptorImageInfo imageInfo = {};
 	VkDescriptorBufferInfo bufferInfo[2] = {};
@@ -205,8 +207,8 @@ VkPipeline VulkanComputeShaderManager::GetPipeline(VkShaderModule cs) {
 void VulkanComputeShaderManager::BeginFrame() {
 	int curFrame = vulkan_->GetCurFrame();
 	FrameData &frame = frameData_[curFrame];
-	frame.descPool.Reset();
-}
-
-void VulkanComputeShaderManager::EndFrame() {
+	if (frame.descPoolUsed) {
+		frame.descPool.Reset();
+		frame.descPoolUsed = false;
+	}
 }

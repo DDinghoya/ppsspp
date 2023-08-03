@@ -26,7 +26,7 @@
 #include "Common/Thread/Event.h"
 #include "Core/ELF/ParamSFO.h"
 #include "Common/File/Path.h"
-#include "UI/TextureUtil.h"
+#include "Common/Render/ManagedTexture.h"
 
 namespace Draw {
 	class DrawContext;
@@ -118,6 +118,9 @@ public:
 	// and obviously also not when creating it and holding the only pointer
 	// to it.
 	std::mutex lock;
+
+	// Controls access to the fileLoader pointer.
+	std::mutex loaderLock;
 
 	std::string id;
 	std::string id_version;

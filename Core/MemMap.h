@@ -246,6 +246,10 @@ inline void Write_Float(float f, u32 address)
 
 u8* GetPointerWrite(const u32 address);
 const u8* GetPointer(const u32 address);
+
+u8 *GetPointerWriteRange(const u32 address, const u32 size);
+const u8 *GetPointerRange(const u32 address, const u32 size);
+
 bool IsRAMAddress(const u32 address);
 inline bool IsVRAMAddress(const u32 address) {
 	return ((address & 0x3F800000) == 0x04000000);
@@ -276,6 +280,10 @@ inline const char* GetCharPointer(const u32 address) {
 	}
 }
 
+inline const char *GetCharPointerUnchecked(const u32 address) {
+	return (const char *)GetPointerUnchecked(address);
+}
+
 inline void MemcpyUnchecked(void *to_data, const u32 from_address, const u32 len) {
 	memcpy(to_data, GetPointerUnchecked(from_address), len);
 }
@@ -285,7 +293,7 @@ inline void MemcpyUnchecked(const u32 to_address, const void *from_data, const u
 }
 
 inline void MemcpyUnchecked(const u32 to_address, const u32 from_address, const u32 len) {
-	MemcpyUnchecked(GetPointerWrite(to_address), from_address, len);
+	MemcpyUnchecked(GetPointerWriteUnchecked(to_address), from_address, len);
 }
 
 inline bool IsValidAddress(const u32 address) {
@@ -323,10 +331,13 @@ inline u32 ValidSize(const u32 address, const u32 requested_size) {
 }
 
 inline bool IsValidRange(const u32 address, const u32 size) {
-	return IsValidAddress(address) && ValidSize(address, size) == size;
+	return ValidSize(address, size) == size;
 }
 
 }  // namespace Memory
+
+// Avoiding a global include for NotifyMemInfo.
+void PSPPointerNotifyRW(int rw, uint32_t ptr, uint32_t bytes, const char *tag, size_t tagLen);
 
 template <typename T>
 struct PSPPointer
@@ -438,9 +449,35 @@ struct PSPPointer
 #endif
 	}
 
-	bool IsValid() const
+	bool IsValid() const {
+		return Memory::IsValidRange(ptr, (u32)sizeof(T));
+	}
+
+	T *PtrOrNull() {
+		if (IsValid())
+			return (T *)*this;
+		return nullptr;
+	}
+
+	const T *PtrOrNull() const {
+		if (IsValid())
+			return (const T *)*this;
+		return nullptr;
+	}
+
+	template <size_t tagLen>
+	void NotifyWrite(const char(&tag)[tagLen]) const {
+		PSPPointerNotifyRW(1, (uint32_t)ptr, (uint32_t)sizeof(T), tag, tagLen - 1);
+	}
+
+	template <size_t tagLen>
+	void NotifyRead(const char(&tag)[tagLen]) const {
+		PSPPointerNotifyRW(2, (uint32_t)ptr, (uint32_t)sizeof(T), tag, tagLen - 1);
+	}
+
+	size_t ElementSize() const
 	{
-		return Memory::IsValidAddress(ptr);
+		return sizeof(T);
 	}
 
 	static PSPPointer<T> Create(u32 ptr) {

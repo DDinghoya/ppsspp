@@ -34,6 +34,7 @@
 #include "Core/Reporting.h"
 #include "Core/System.h"
 
+#include "Core/HLE/sceJpeg.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelInterrupt.h"
 #include "Core/HLE/sceKernelMemory.h"
@@ -79,15 +80,20 @@ static const int mpegBaseModuleDeps[] = {0x0300, 0};
 static const int mp4ModuleDeps[] = {0x0300, 0};
 
 struct ModuleLoadInfo {
-	ModuleLoadInfo(int m, u32 s) : mod(m), size(s), dependencies(noDeps) {
+	ModuleLoadInfo(int m, u32 s, void(*n)(int) = nullptr) : mod(m), size(s), dependencies(noDeps), notify(n) {
 	}
-	ModuleLoadInfo(int m, u32 s, const int *d) : mod(m), size(s), dependencies(d) {
+	ModuleLoadInfo(int m, u32 s, const int *d, void(*n)(int) = nullptr) : mod(m), size(s), dependencies(d), notify(n) {
 	}
 
 	const int mod;
 	const u32 size;
 	const int *const dependencies;
+	void (*notify)(int state);
 };
+
+static void NotifyLoadStatusAvcodec(int state) {
+	JpegNotifyLoadStatus(state);
+}
 
 static const ModuleLoadInfo moduleLoadInfo[] = {
 	ModuleLoadInfo(0x0100, 0x00014000),
@@ -104,7 +110,7 @@ static const ModuleLoadInfo moduleLoadInfo[] = {
 	ModuleLoadInfo(0x0202, 0x00000000),
 	ModuleLoadInfo(0x0203, 0x00000000),
 	ModuleLoadInfo(0x02ff, 0x00000000),
-	ModuleLoadInfo(0x0300, 0x00000000),
+	ModuleLoadInfo(0x0300, 0x00000000, &NotifyLoadStatusAvcodec),
 	ModuleLoadInfo(0x0301, 0x00000000),
 	ModuleLoadInfo(0x0302, 0x00008000, atrac3PlusModuleDeps),
 	ModuleLoadInfo(0x0303, 0x0000c000, mpegBaseModuleDeps),
@@ -141,6 +147,7 @@ static int volatileUnlockEvent = -1;
 static HLEHelperThread *accessThread = nullptr;
 static bool accessThreadFinished = true;
 static const char *accessThreadState = "initial";
+static int lastSaveStateVersion = -1;
 
 static void CleanupDialogThreads(bool force = false) {
 	if (accessThread) {
@@ -274,6 +281,9 @@ void __UtilityDoState(PointerWrap &p) {
 
 	if (s >= 6) {
 		npSigninDialog->DoState(p);
+		lastSaveStateVersion = -1;
+	} else {
+		lastSaveStateVersion = s.Version();
 	}
 
 	if (!hasAccessThread && accessThread) {
@@ -299,6 +309,7 @@ void __UtilityShutdown() {
 		accessThreadState = "shutdown";
 	}
 	accessThreadFinished = true;
+	lastSaveStateVersion = -1;
 
 	delete saveDialog;
 	delete msgDialog;
@@ -405,7 +416,7 @@ static int UtilityFinishDialog(int type) {
 static int sceUtilitySavedataInitStart(u32 paramAddr) {
 	if (currentDialogActive && currentDialogType != UtilityDialogType::SAVEDATA) {
 		if (PSP_CoreParameter().compat.flags().YugiohSaveFix) {
-			WARN_LOG(SCEUTILITY, "Yugioh Savedata Correction");
+			WARN_LOG_REPORT(SCEUTILITY, "Yugioh Savedata Correction (state=%d)", lastSaveStateVersion);
 			if (accessThread) {
 				accessThread->Terminate();
 				delete accessThread;
@@ -470,12 +481,16 @@ static u32 sceUtilityLoadAvModule(u32 module)
 	}
 	
 	INFO_LOG(SCEUTILITY, "0=sceUtilityLoadAvModule(%i)", module);
+	if (module == 0)
+		JpegNotifyLoadStatus(1);
 	return hleDelayResult(0, "utility av module loaded", 25000);
 }
 
 static u32 sceUtilityUnloadAvModule(u32 module)
 {
 	INFO_LOG(SCEUTILITY,"0=sceUtilityUnloadAvModule(%i)", module);
+	if (module == 0)
+		JpegNotifyLoadStatus(-1);
 	return hleDelayResult(0, "utility av module unloaded", 800);
 }
 
@@ -516,6 +531,9 @@ static u32 sceUtilityLoadModule(u32 module) {
 		currentlyLoadedModules[module] = 0;
 	}
 
+	if (info->notify)
+		info->notify(1);
+
 	// TODO: Each module has its own timing, technically, but this is a low-end.
 	if (module == 0x3FF)
 		return hleDelayResult(hleLogSuccessInfoI(SCEUTILITY, 0), "utility module loaded", 130);
@@ -536,6 +554,9 @@ static u32 sceUtilityUnloadModule(u32 module) {
 		userMemory.Free(currentlyLoadedModules[module]);
 	}
 	currentlyLoadedModules.erase(module);
+
+	if (info->notify)
+		info->notify(-1);
 
 	// TODO: Each module has its own timing, technically, but this is a low-end.
 	if (module == 0x3FF)
@@ -620,6 +641,9 @@ static int sceUtilityOskUpdate(int animSpeed) {
 		return hleLogWarning(SCEUTILITY, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 	
+	// This is the vblank period, plus a little slack. Needed to fix timing bug in Ghost Recon: Predator.
+	// See issue #12044.
+	hleEatCycles(msToCycles(0.7315 + 0.1));
 	return hleLogSuccessX(SCEUTILITY, oskDialog->Update(animSpeed));
 }
 
@@ -744,11 +768,14 @@ static int sceUtilityGamedataInstallInitStart(u32 paramsAddr) {
 	}
 
 	ActivateDialog(UtilityDialogType::GAMEDATAINSTALL);
-	return hleLogSuccessInfoX(SCEUTILITY, gamedataInstallDialog->Init(paramsAddr));
+	int result = gamedataInstallDialog->Init(paramsAddr);
+	if (result < 0)
+		DeactivateDialog();
+	return hleLogSuccessInfoX(SCEUTILITY, result);
 }
 
 static int sceUtilityGamedataInstallShutdownStart() {
-	if (currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
+	if (!currentDialogActive || currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
 		return hleLogWarning(SCEUTILITY, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 	
@@ -757,7 +784,7 @@ static int sceUtilityGamedataInstallShutdownStart() {
 }
 
 static int sceUtilityGamedataInstallUpdate(int animSpeed) {
-	if (currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
+	if (!currentDialogActive || currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
 		return hleLogWarning(SCEUTILITY, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 	
@@ -765,8 +792,9 @@ static int sceUtilityGamedataInstallUpdate(int animSpeed) {
 }
 
 static int sceUtilityGamedataInstallGetStatus() {
-	if (currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
+	if (!currentDialogActive || currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
 		// This is called incorrectly all the time by some games. So let's not bother warning.
+		hleEatCycles(200);
 		return hleLogDebug(SCEUTILITY, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 
@@ -776,7 +804,7 @@ static int sceUtilityGamedataInstallGetStatus() {
 }
 
 static int sceUtilityGamedataInstallAbort() {
-	if (currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
+	if (!currentDialogActive || currentDialogType != UtilityDialogType::GAMEDATAINSTALL) {
 		return hleLogWarning(SCEUTILITY, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 	
@@ -791,15 +819,20 @@ static u32 sceUtilitySetSystemParamString(u32 id, u32 strPtr)
 	return 0;
 }
 
-static u32 sceUtilityGetSystemParamString(u32 id, u32 destaddr, int destSize)
+static u32 sceUtilityGetSystemParamString(u32 id, u32 destAddr, int destSize)
 {
-	DEBUG_LOG(SCEUTILITY, "sceUtilityGetSystemParamString(%i, %08x, %i)", id, destaddr, destSize);
-	char *buf = (char *)Memory::GetPointer(destaddr);
+	if (!Memory::IsValidRange(destAddr, destSize)) {
+		// TODO: What error code?
+		return -1;
+	}
+	DEBUG_LOG(SCEUTILITY, "sceUtilityGetSystemParamString(%i, %08x, %i)", id, destAddr, destSize);
+	char *buf = (char *)Memory::GetPointerWriteUnchecked(destAddr);
 	switch (id) {
 	case PSP_SYSTEMPARAM_ID_STRING_NICKNAME:
 		// If there's not enough space for the string and null terminator, fail.
 		if (destSize <= (int)g_Config.sNickName.length())
 			return PSP_SYSTEMPARAM_RETVAL_STRING_TOO_LONG;
+		// TODO: should we zero-pad the output as strncpy does? And what are the semantics for the terminating null if destSize == length?
 		strncpy(buf, g_Config.sNickName.c_str(), destSize);
 		break;
 
@@ -865,10 +898,15 @@ static u32 sceUtilityGetSystemParamInt(u32 id, u32 destaddr)
 		param = g_Config.bDayLightSavings?PSP_SYSTEMPARAM_DAYLIGHTSAVINGS_SAVING:PSP_SYSTEMPARAM_DAYLIGHTSAVINGS_STD;
 		break;
 	case PSP_SYSTEMPARAM_ID_INT_LANGUAGE:
-		param = g_Config.iLanguage;
+		param = g_Config.GetPSPLanguage();
+		if (PSP_CoreParameter().compat.flags().EnglishOrJapaneseOnly) {
+			if (param != PSP_SYSTEMPARAM_LANGUAGE_ENGLISH && param != PSP_SYSTEMPARAM_LANGUAGE_JAPANESE) {
+				param = PSP_SYSTEMPARAM_LANGUAGE_ENGLISH;
+			}
+		}
 		break;
 	case PSP_SYSTEMPARAM_ID_INT_BUTTON_PREFERENCE:
-		param = g_Config.iButtonPreference;
+		param = PSP_CoreParameter().compat.flags().ForceCircleButtonConfirm ? PSP_SYSTEMPARAM_BUTTON_CIRCLE : g_Config.iButtonPreference;
 		break;
 	case PSP_SYSTEMPARAM_ID_INT_LOCK_PARENTAL_LEVEL:
 		param = g_Config.iLockParentalLevel;

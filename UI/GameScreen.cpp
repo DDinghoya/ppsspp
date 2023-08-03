@@ -29,8 +29,8 @@
 #include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
 #include "Common/System/System.h"
+#include "Common/System/Request.h"
 #include "Common/System/NativeApp.h"
-#include "Core/Host.h"
 #include "Core/Config.h"
 #include "Core/Reporting.h"
 #include "Core/System.h"
@@ -43,6 +43,7 @@
 #include "UI/MiscScreens.h"
 #include "UI/MainScreen.h"
 #include "UI/BackgroundAudio.h"
+#include "UI/SavedataScreen.h"
 #include "Core/Reporting.h"
 
 GameScreen::GameScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {
@@ -86,9 +87,9 @@ void GameScreen::CreateViews() {
 		saveDirs = info->GetSaveDataDirectories(); // Get's very heavy, let's not do it in update()
 	}
 
-	auto di = GetI18NCategory("Dialog");
-	auto ga = GetI18NCategory("Game");
-	auto pa = GetI18NCategory("Pause");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto ga = GetI18NCategory(I18NCat::GAME);
+	auto pa = GetI18NCategory(I18NCat::PAUSE);
 
 	// Information in the top left.
 	// Back button to the bottom left.
@@ -139,7 +140,7 @@ void GameScreen::CreateViews() {
 
 	ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
 	root_->Add(rightColumn);
-	
+
 	LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL);
 	rightColumnItems->SetSpacing(0.0f);
 	rightColumn->Add(rightColumnItems);
@@ -164,7 +165,7 @@ void GameScreen::CreateViews() {
 	otherChoices_.clear();
 
 	rightColumnItems->Add(AddOtherChoice(new Choice(ga->T("Delete Game"))))->OnClick.Handle(this, &GameScreen::OnDeleteGame);
-	if (host->CanCreateShortcut()) {
+	if (System_GetPropertyBool(SYSPROP_CAN_CREATE_SHORTCUT)) {
 		rightColumnItems->Add(AddOtherChoice(new Choice(ga->T("Create Shortcut"))))->OnClick.Handle(this, &GameScreen::OnCreateShortcut);
 	}
 	if (isRecentGame(gamePath_)) {
@@ -198,7 +199,7 @@ void GameScreen::CreateViews() {
 
 	bool isHomebrew = info && info->region > GAMEREGION_MAX;
 	if (fileTypeSupportCRC && !isHomebrew && !Reporting::HasCRC(gamePath_) ) {
-		btnCalcCRC_ = rightColumnItems->Add(new ChoiceWithValueDisplay(&CRC32string, ga->T("Calculate CRC"), (const char*)nullptr));
+		btnCalcCRC_ = rightColumnItems->Add(new ChoiceWithValueDisplay(&CRC32string, ga->T("Calculate CRC"), I18NCat::NONE));
 		btnCalcCRC_->OnClick.Handle(this, &GameScreen::OnDoCRC32);
 	} else {
 		btnCalcCRC_ = nullptr;
@@ -239,10 +240,10 @@ void GameScreen::CallbackDeleteConfig(bool yes) {
 
 UI::EventReturn GameScreen::OnDeleteConfig(UI::EventParams &e)
 {
-	auto di = GetI18NCategory("Dialog");
-	auto ga = GetI18NCategory("Game");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto ga = GetI18NCategory(I18NCat::GAME);
 	screenManager()->push(
-		new PromptScreen(di->T("DeleteConfirmGameConfig", "Do you really want to delete the settings for this game?"), ga->T("ConfirmDelete"), di->T("Cancel"),
+		new PromptScreen(gamePath_, di->T("DeleteConfirmGameConfig", "Do you really want to delete the settings for this game?"), ga->T("ConfirmDelete"), di->T("Cancel"),
 		std::bind(&GameScreen::CallbackDeleteConfig, this, std::placeholders::_1)));
 
 	return UI::EVENT_DONE;
@@ -251,7 +252,7 @@ UI::EventReturn GameScreen::OnDeleteConfig(UI::EventParams &e)
 void GameScreen::render() {
 	UIScreen::render();
 
-	auto ga = GetI18NCategory("Game");
+	auto ga = GetI18NCategory(I18NCat::GAME);
 
 	Draw::DrawContext *thin3d = screenManager()->getDrawContext();
 
@@ -295,7 +296,7 @@ void GameScreen::render() {
 	}
 
 	if (tvCRC_ && Reporting::HasCRC(gamePath_)) {
-		auto rp = GetI18NCategory("Reporting");
+		auto rp = GetI18NCategory(I18NCat::REPORTING);
 		std::string crc = StringFromFormat("%08X", Reporting::RetrieveCRC(gamePath_));
 		tvCRC_->SetText(ReplaceAll(rp->T("FeedbackCRCValue", "Disc CRC: %1"), "%1", crc));
 		tvCRC_->SetVisibility(UI::V_VISIBLE);
@@ -327,7 +328,7 @@ void GameScreen::render() {
 }
 
 UI::EventReturn GameScreen::OnShowInFolder(UI::EventParams &e) {
-	OpenDirectory(gamePath_.c_str());
+	System_ShowFileInFolder(gamePath_.c_str());
 	return UI::EVENT_DONE;
 }
 
@@ -366,14 +367,14 @@ UI::EventReturn GameScreen::OnGameSettings(UI::EventParams &e) {
 }
 
 UI::EventReturn GameScreen::OnDeleteSaveData(UI::EventParams &e) {
-	auto di = GetI18NCategory("Dialog");
-	auto ga = GetI18NCategory("Game");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto ga = GetI18NCategory(I18NCat::GAME);
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(NULL, gamePath_, GAMEINFO_WANTBG | GAMEINFO_WANTSIZE);
 	if (info) {
 		// Check that there's any savedata to delete
 		if (saveDirs.size()) {
 			screenManager()->push(
-				new PromptScreen(di->T("DeleteConfirmAll", "Do you really want to delete all\nyour save data for this game?"), ga->T("ConfirmDelete"), di->T("Cancel"),
+				new PromptScreen(gamePath_, di->T("DeleteConfirmAll", "Do you really want to delete all\nyour save data for this game?"), ga->T("ConfirmDelete"), di->T("Cancel"),
 				std::bind(&GameScreen::CallbackDeleteSaveData, this, std::placeholders::_1)));
 		}
 	}
@@ -392,12 +393,12 @@ void GameScreen::CallbackDeleteSaveData(bool yes) {
 }
 
 UI::EventReturn GameScreen::OnDeleteGame(UI::EventParams &e) {
-	auto di = GetI18NCategory("Dialog");
-	auto ga = GetI18NCategory("Game");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto ga = GetI18NCategory(I18NCat::GAME);
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(NULL, gamePath_, GAMEINFO_WANTBG | GAMEINFO_WANTSIZE);
 	if (info) {
 		screenManager()->push(
-			new PromptScreen(di->T("DeleteConfirmGame", "Do you really want to delete this game\nfrom your device? You can't undo this."), ga->T("ConfirmDelete"), di->T("Cancel"),
+			new PromptScreen(gamePath_, di->T("DeleteConfirmGame", "Do you really want to delete this game\nfrom your device? You can't undo this."), ga->T("ConfirmDelete"), di->T("Cancel"),
 			std::bind(&GameScreen::CallbackDeleteGame, this, std::placeholders::_1)));
 	}
 
@@ -416,7 +417,7 @@ void GameScreen::CallbackDeleteGame(bool yes) {
 UI::EventReturn GameScreen::OnCreateShortcut(UI::EventParams &e) {
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(NULL, gamePath_, 0);
 	if (info) {
-		host->CreateDesktopShortcut(gamePath_.ToString(), info->GetTitle());
+		System_CreateGameShortcut(gamePath_, info->GetTitle());
 	}
 	return UI::EVENT_DONE;
 }
@@ -442,7 +443,11 @@ UI::EventReturn GameScreen::OnRemoveFromRecent(UI::EventParams &e) {
 
 class SetBackgroundPopupScreen : public PopupScreen {
 public:
-	SetBackgroundPopupScreen(const std::string &title, const Path &gamePath);
+	SetBackgroundPopupScreen(const std::string &title, const Path &gamePath)
+		: PopupScreen(title), gamePath_(gamePath) {
+		timeStart_ = time_now_d();
+	}
+	const char *tag() const override { return "SetBackgroundPopup"; }
 
 protected:
 	bool FillVertical() const override { return false; }
@@ -463,13 +468,8 @@ private:
 	Status status_ = Status::PENDING;
 };
 
-SetBackgroundPopupScreen::SetBackgroundPopupScreen(const std::string &title, const Path &gamePath)
-	: PopupScreen(title), gamePath_(gamePath) {
-	timeStart_ = time_now_d();
-}
-
 void SetBackgroundPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
-	auto ga = GetI18NCategory("Game");
+	auto ga = GetI18NCategory(I18NCat::GAME);
 	parent->Add(new UI::TextView(ga->T("One moment please..."), ALIGN_LEFT | ALIGN_VCENTER, false, new UI::LinearLayoutParams(UI::Margins(10, 0, 10, 10))));
 }
 
@@ -490,7 +490,7 @@ void SetBackgroundPopupScreen::update() {
 			File::WriteStringToFile(false, pic->data, bgPng);
 		}
 
-		NativeMessageReceived("bgImage_updated", "");
+		UIBackgroundShutdown();
 
 		// It's worse if it flickers, stay open for at least 1s.
 		timeDone_ = timeStart_ + 1.0;
@@ -504,7 +504,7 @@ void SetBackgroundPopupScreen::update() {
 }
 
 UI::EventReturn GameScreen::OnSetBackground(UI::EventParams &e) {
-	auto ga = GetI18NCategory("Game");
+	auto ga = GetI18NCategory(I18NCat::GAME);
 	// This popup is used to prevent any race condition:
 	// g_gameInfoCache may take time to load the data, and a crash could happen if they exit before then.
 	SetBackgroundPopupScreen *pop = new SetBackgroundPopupScreen(ga->T("Setting Background"), gamePath_);

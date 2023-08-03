@@ -1,7 +1,7 @@
+#include "ppsspp_config.h"
+
 #include <cstdio>
 #include <cstdint>
-
-#include "ppsspp_config.h"
 
 #include "Common/TimeUtil.h"
 
@@ -21,8 +21,6 @@
 
 // TODO: https://github.com/floooh/sokol/blob/9a6237fcdf213e6da48e4f9201f144bcb2dcb46f/sokol_time.h#L229-L248
 
-static double curtime = 0;
-
 #ifdef _WIN32
 
 static LARGE_INTEGER frequency;
@@ -33,13 +31,35 @@ double time_now_d() {
 	if (frequency.QuadPart == 0) {
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&startTime);
-		curtime = 0.0;
 		frequencyMult = 1.0 / static_cast<double>(frequency.QuadPart);
 	}
 	LARGE_INTEGER time;
 	QueryPerformanceCounter(&time);
 	double elapsed = static_cast<double>(time.QuadPart - startTime.QuadPart);
 	return elapsed * frequencyMult;
+}
+
+// Fake, but usable in a pinch. Don't, though.
+uint64_t time_now_raw() {
+	return (uint64_t)(time_now_d() * 1000000000.0);
+}
+
+#elif PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(LINUX) || PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
+
+// The only intended use is to match the timings in VK_GOOGLE_display_timing
+uint64_t time_now_raw() {
+	struct timespec tp;
+	clock_gettime(CLOCK_MONOTONIC, &tp);
+	return tp.tv_sec * 1000000000ULL + tp.tv_nsec;
+}
+
+double time_now_d() {
+	static uint64_t start;
+	uint64_t raw_time = time_now_raw();
+	if (start == 0) {
+		start = raw_time;
+	}
+	return (double)(raw_time - start) * (1.0 / 1000000000.0);
 }
 
 #else
@@ -52,6 +72,11 @@ double time_now_d() {
 		start = tv.tv_sec;
 	}
 	return (double)(tv.tv_sec - start) + (double)tv.tv_usec * (1.0 / 1000000.0);
+}
+
+// Fake, but usable in a pinch. Don't, though.
+uint64_t time_now_raw() {
+	return (uint64_t)(time_now_d() * 1000000000.0);
 }
 
 #endif

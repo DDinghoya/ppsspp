@@ -105,7 +105,10 @@ public:
 class DrawEngineDX9 : public DrawEngineCommon {
 public:
 	DrawEngineDX9(Draw::DrawContext *draw);
-	virtual ~DrawEngineDX9();
+	~DrawEngineDX9();
+
+	void DeviceLost() override { draw_ = nullptr; }
+	void DeviceRestore(Draw::DrawContext *draw) override { draw_ = draw; }
 
 	void SetShaderManager(ShaderManagerDX9 *shaderManager) {
 		shaderManager_ = shaderManager;
@@ -125,32 +128,36 @@ public:
 
 	// So that this can be inlined
 	void Flush() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
 		DoFlush();
 	}
 
 	void FinishDeferred() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
-		DecodeVerts(decoded);
+		DecodeVerts(decoded_);
 	}
 
-	void DispatchFlush() override { Flush(); }
+	void DispatchFlush() override {
+		if (!numDrawCalls_)
+			return;
+		Flush();
+	}
 
 protected:
 	// Not currently supported.
-	bool UpdateUseHWTessellation(bool enable) override { return false; }
+	bool UpdateUseHWTessellation(bool enable) const override { return false; }
 	void DecimateTrackedVertexArrays();
 
 private:
+	void Invalidate(InvalidationCallbackFlags flags);
 	void DoFlush();
 
 	void ApplyDrawState(int prim);
 	void ApplyDrawStateLate();
-	void ResetFramebufferRead();
 
-	IDirect3DVertexDeclaration9 *SetupDecFmtForDraw(VSShader *vshader, const DecVtxFormat &decFmt, u32 pspFmt);
+	IDirect3DVertexDeclaration9 *SetupDecFmtForDraw(const DecVtxFormat &decFmt, u32 pspFmt);
 
 	void MarkUnreliable(VertexArrayInfoDX9 *vai);
 
@@ -171,5 +178,9 @@ private:
 	// Hardware tessellation
 	TessellationDataTransferDX9 *tessDataTransferDX9;
 
+	FBOTexState fboTexBindState_ = FBO_TEX_NONE;
+
 	int lastRenderStepId_ = -1;
+
+	bool fboTexNeedsBind_ = false;
 };

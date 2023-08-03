@@ -1,5 +1,3 @@
-// NOTE: Apologies for the quality of this code, this is really from pre-opensource Dolphin - that is, 2003.
-
 #pragma warning(disable:4091)  // workaround bug in VS2015 headers
 
 #include "Windows/stdafx.h"
@@ -33,7 +31,9 @@ namespace W32Util
 		auto idList = SHBrowseForFolder(&info);
 		HMODULE shell32 = GetModuleHandle(L"shell32.dll");
 		typedef BOOL (WINAPI *SHGetPathFromIDListEx_f)(PCIDLIST_ABSOLUTE pidl, PWSTR pszPath, DWORD cchPath, GPFIDL_FLAGS uOpts);
-		SHGetPathFromIDListEx_f SHGetPathFromIDListEx_ = (SHGetPathFromIDListEx_f)GetProcAddress(shell32, "SHGetPathFromIDListEx");
+		SHGetPathFromIDListEx_f SHGetPathFromIDListEx_ = nullptr;
+		if (shell32)
+			SHGetPathFromIDListEx_ = (SHGetPathFromIDListEx_f)GetProcAddress(shell32, "SHGetPathFromIDListEx");
 
 		std::string result;
 		if (SHGetPathFromIDListEx_) {
@@ -57,9 +57,6 @@ namespace W32Util
 		return result;
 	}
 
-	//---------------------------------------------------------------------------------------------------
-	// function WinBrowseForFileName
-	//---------------------------------------------------------------------------------------------------
 	bool BrowseForFileName(bool _bLoad, HWND _hParent, const wchar_t *_pTitle,
 		const wchar_t *_pInitialFolder, const wchar_t *_pFilter, const wchar_t *_pExtension,
 		std::string &_strFileName) {
@@ -144,7 +141,7 @@ namespace W32Util
 				files.push_back(directory);
 			} else {
 				while (*temp) {
-					files.push_back(directory + "\\" + ConvertWStringToUTF8(temp));
+					files.emplace_back(directory + "\\" + ConvertWStringToUTF8(temp));
 					temp += wcslen(temp) + 1;
 				}
 			}
@@ -156,7 +153,9 @@ namespace W32Util
 		std::string result;
 		HMODULE shell32 = GetModuleHandle(L"shell32.dll");
 		typedef HRESULT(WINAPI *SHGetKnownFolderPath_f)(REFKNOWNFOLDERID rfid, DWORD dwFlags, HANDLE hToken, PWSTR *ppszPath);
-		SHGetKnownFolderPath_f SHGetKnownFolderPath_ = (SHGetKnownFolderPath_f)GetProcAddress(shell32, "SHGetKnownFolderPath");
+		SHGetKnownFolderPath_f SHGetKnownFolderPath_ = nullptr;
+		if (shell32)
+			SHGetKnownFolderPath_ = (SHGetKnownFolderPath_f)GetProcAddress(shell32, "SHGetKnownFolderPath");
 		if (SHGetKnownFolderPath_) {
 			PWSTR path = nullptr;
 			if (SHGetKnownFolderPath_(FOLDERID_Documents, 0, nullptr, &path) == S_OK) {
@@ -174,42 +173,78 @@ namespace W32Util
 		return result;
 	}
 
-	AsyncBrowseDialog::AsyncBrowseDialog(HWND parent, UINT completeMsg, std::wstring title)
-		: type_(DIR), parent_(parent), completeMsg_(completeMsg), title_(title), complete_(false), result_(false) {
-		thread_ = new std::thread(std::bind(&AsyncBrowseDialog::Execute, this));
-		thread_->detach();
-	}
 
-	AsyncBrowseDialog::AsyncBrowseDialog(Type type, HWND parent, UINT completeMsg, std::wstring title, std::wstring initialFolder, std::wstring filter, std::wstring extension)
-		: type_(type), parent_(parent), completeMsg_(completeMsg), title_(title), initialFolder_(initialFolder), filter_(filter), extension_(extension), complete_(false), result_(false) {
-		thread_ = new std::thread(std::bind(&AsyncBrowseDialog::Execute, this));
-		thread_->detach();
-	}
+// http://msdn.microsoft.com/en-us/library/aa969393.aspx
+HRESULT CreateLink(LPCWSTR lpszPathObj, LPCWSTR lpszArguments, LPCWSTR lpszPathLink, LPCWSTR lpszDesc) {
+	HRESULT hres;
+	IShellLink *psl = nullptr;
+	hres = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	if (FAILED(hres))
+		return hres;
 
-	AsyncBrowseDialog::~AsyncBrowseDialog() {
-		delete thread_;
-	}
+	// Get a pointer to the IShellLink interface. It is assumed that CoInitialize
+	// has already been called.
+	hres = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID *)&psl);
+	if (SUCCEEDED(hres) && psl) {
+		IPersistFile *ppf = nullptr;
 
-	bool AsyncBrowseDialog::GetResult(std::string &filename) {
-		filename = filename_;
-		return result_;
-	}
+		// Set the path to the shortcut target and add the description. 
+		psl->SetPath(lpszPathObj);
+		psl->SetArguments(lpszArguments);
+		psl->SetDescription(lpszDesc);
 
-	void AsyncBrowseDialog::Execute() {
-		switch (type_) {
-		case DIR:
-			filename_ = BrowseForFolder(parent_, title_.c_str());
-			result_ = filename_ != "";
-			complete_ = true;
-			break;
+		// Query IShellLink for the IPersistFile interface, used for saving the 
+		// shortcut in persistent storage. 
+		hres = psl->QueryInterface(IID_IPersistFile, (LPVOID *)&ppf);
 
-		case OPEN:
-		case SAVE:
-			result_ = BrowseForFileName(type_ == OPEN, parent_, title_.c_str(), initialFolder_.size() ? initialFolder_.c_str() : 0, filter_.c_str(), extension_.c_str(), filename_);
-			complete_ = true;
-			break;
+		if (SUCCEEDED(hres) && ppf) {
+			// Save the link by calling IPersistFile::Save. 
+			hres = ppf->Save(lpszPathLink, TRUE);
+			ppf->Release();
 		}
-
-		PostMessage(parent_, completeMsg_, 0, 0);
+		psl->Release();
 	}
+	CoUninitialize();
+
+	return hres;
 }
+
+bool CreateDesktopShortcut(const std::string &argumentPath, std::string gameTitle) {
+	// TODO: not working correctly
+	return false;
+
+	// Get the desktop folder
+	// TODO: Not long path safe.
+	wchar_t *pathbuf = new wchar_t[MAX_PATH + gameTitle.size() + 100];
+	SHGetFolderPath(0, CSIDL_DESKTOPDIRECTORY, NULL, SHGFP_TYPE_CURRENT, pathbuf);
+
+	// Sanitize the game title for banned characters.
+	const char bannedChars[] = "<>:\"/\\|?*";
+	for (size_t i = 0; i < gameTitle.size(); i++) {
+		for (char c : bannedChars) {
+			if (gameTitle[i] == c) {
+				gameTitle[i] = '_';
+				break;
+			}
+		}
+	}
+
+	wcscat(pathbuf, L"\\");
+	wcscat(pathbuf, ConvertUTF8ToWString(gameTitle).c_str());
+
+	std::wstring moduleFilename;
+	size_t sz;
+	do {
+		moduleFilename.resize(moduleFilename.size() + MAX_PATH);
+		// On failure, this will return the same value as passed in, but success will always be one lower.
+		sz = GetModuleFileName(nullptr, &moduleFilename[0], (DWORD)moduleFilename.size());
+	} while (sz >= moduleFilename.size());
+	moduleFilename.resize(sz);
+
+	CreateLink(moduleFilename.c_str(), ConvertUTF8ToWString(argumentPath).c_str(), pathbuf, ConvertUTF8ToWString(gameTitle).c_str());
+
+	delete[] pathbuf;
+	return false;
+}
+
+}  // namespace

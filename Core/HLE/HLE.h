@@ -130,13 +130,11 @@ u64 hleDelayResult(u64 result, const char *reason, int usec);
 void hleEatCycles(int cycles);
 void hleEatMicro(int usec);
 
-inline int hleDelayResult(int result, const char *reason, int usec)
-{
+inline int hleDelayResult(int result, const char *reason, int usec) {
 	return hleDelayResult((u32) result, reason, usec);
 }
 
-inline s64 hleDelayResult(s64 result, const char *reason, int usec)
-{
+inline s64 hleDelayResult(s64 result, const char *reason, int usec) {
 	return hleDelayResult((u64) result, reason, usec);
 }
 
@@ -189,7 +187,7 @@ T hleDoLog(LogTypes::LOG_TYPE t, LogTypes::LOG_LEVELS level, T res, const char *
 
 template <typename T>
 T hleDoLog(LogTypes::LOG_TYPE t, LogTypes::LOG_LEVELS level, T res, const char *file, int line, const char *reportTag, char retmask) {
-	if (level > MAX_LOGLEVEL || !GenericLogEnabled(level, t)) {
+	if ((level > MAX_LOGLEVEL || !GenericLogEnabled(level, t)) && !reportTag) {
 		return res;
 	}
 

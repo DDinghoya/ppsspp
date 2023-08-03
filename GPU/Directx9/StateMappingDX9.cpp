@@ -21,7 +21,6 @@
 
 #include "Core/System.h"
 #include "Core/Config.h"
-#include "Core/Reporting.h"
 
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
@@ -88,10 +87,6 @@ static const D3DSTENCILOP stencilOps[] = {
 	D3DSTENCILOP_KEEP, // reserved
 };
 
-inline void DrawEngineDX9::ResetFramebufferRead() {
-	fboTexBound_ = false;
-}
-
 void DrawEngineDX9::ApplyDrawState(int prim) {
 	if (!gstate_c.IsDirty(DIRTY_BLEND_STATE | DIRTY_TEXTURE_IMAGE | DIRTY_TEXTURE_PARAMS | DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_RASTER_STATE | DIRTY_DEPTHSTENCIL_STATE)) {
 		// nothing to do
@@ -103,14 +98,14 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 	if (!gstate.isModeClear()) {
 		textureCache_->ApplyTexture();
 
-		if (fboTexNeedsBind_) {
+		if (fboTexBindState_ == FBO_TEX_COPY_BIND_TEX) {
 			// Note that this is positions, not UVs, that we need the copy from.
-			framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY);
+			framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY, 0);
 			// If we are rendering at a higher resolution, linear is probably best for the dest color.
 			device_->SetSamplerState(1, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 			device_->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
 			fboTexBound_ = true;
-			fboTexNeedsBind_ = false;
+			fboTexBindState_ = FBO_TEX_NONE;
 		}
 
 		// TODO: Test texture?
@@ -119,8 +114,6 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 	bool useBufferedRendering = framebufferManager_->UseBufferedRendering();
 
 	if (gstate_c.IsDirty(DIRTY_BLEND_STATE)) {
-		// Unfortunately, this isn't implemented on DX9 yet.
-		gstate_c.SetAllowFramebufferRead(false);
 		if (gstate.isModeClear()) {
 			dxstate.blend.disable();
 			// Color Mask
@@ -133,35 +126,42 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 			}
 			dxstate.colorMask.set(mask);
 		} else {
-			GenericMaskState maskState;
-			ConvertMaskState(maskState, gstate_c.allowFramebufferRead);
+			pipelineState_.Convert(draw_->GetShaderLanguageDesc().bitwiseOps);
+			GenericMaskState &maskState = pipelineState_.maskState;
+			GenericBlendState &blendState = pipelineState_.blendState;
+			// We ignore the logicState on D3D since there's no support, the emulation of it is blend-and-shader only.
 
-			// Set blend - unless we need to do it in the shader.
-			GenericBlendState blendState;
-			ConvertBlendState(blendState, gstate_c.allowFramebufferRead, maskState.applyFramebufferRead);
-
-			if (blendState.applyFramebufferRead || maskState.applyFramebufferRead) {
-				ApplyFramebufferRead(&fboTexNeedsBind_);
+			if (pipelineState_.FramebufferRead()) {
+				ApplyFramebufferRead(&fboTexBindState_);
 				// The shader takes over the responsibility for blending, so recompute.
 				ApplyStencilReplaceAndLogicOpIgnoreBlend(blendState.replaceAlphaWithStencil, blendState);
 
-				if (fboTexNeedsBind_) {
+				if (fboTexBindState_ == FBO_TEX_COPY_BIND_TEX) {
 					// Note that this is positions, not UVs, that we need the copy from.
-					framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY);
+					framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY | BINDFBCOLOR_UNCACHED, Draw::ALL_LAYERS);
 					// If we are rendering at a higher resolution, linear is probably best for the dest color.
 					device_->SetSamplerState(1, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 					device_->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
 					fboTexBound_ = true;
-					fboTexNeedsBind_ = false;
+					fboTexBindState_ = FBO_TEX_NONE;
+					dirtyRequiresRecheck_ |= DIRTY_BLEND_STATE;
 					gstate_c.Dirty(DIRTY_BLEND_STATE);
+				} else if (fboTexBindState_ == FBO_TEX_READ_FRAMEBUFFER) {
+					// Not supported.
+					fboTexBindState_ = FBO_TEX_NONE;
 				}
 
+				dirtyRequiresRecheck_ |= DIRTY_FRAGMENTSHADER_STATE;
 				gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
-			} else if (blendState.resetFramebufferRead) {
-				ResetFramebufferRead();
+			} else {
+				if (fboTexBound_) {
+					dirtyRequiresRecheck_ |= DIRTY_FRAGMENTSHADER_STATE;
+					gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
+					fboTexBound_ = false;
+				}
 			}
 
-			if (blendState.enabled) {
+			if (blendState.blendEnabled) {
 				dxstate.blend.enable();
 				dxstate.blendSeparate.enable();
 				dxstate.blendEquation.set(dxBlendEqLookup[(size_t)blendState.eqColor], dxBlendEqLookup[(size_t)blendState.eqAlpha]);
@@ -169,6 +169,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 					dxBlendFactorLookup[(size_t)blendState.srcColor], dxBlendFactorLookup[(size_t)blendState.dstColor],
 					dxBlendFactorLookup[(size_t)blendState.srcAlpha], dxBlendFactorLookup[(size_t)blendState.dstAlpha]);
 				if (blendState.dirtyShaderBlendFixValues) {
+					dirtyRequiresRecheck_ |= DIRTY_SHADERBLEND;
 					gstate_c.Dirty(DIRTY_SHADERBLEND);
 				}
 				if (blendState.useBlendColor) {
@@ -178,12 +179,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 				dxstate.blend.disable();
 			}
 
-			u32 mask = 0;
-			for (int i = 0; i < 4; i++) {
-				if (maskState.rgba[i])
-					mask |= 1 << i;
-			}
-			dxstate.colorMask.set(mask);
+			dxstate.colorMask.set(maskState.channelMask);
 		}
 	}
 
@@ -204,6 +200,12 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 		} else {
 			dxstate.shadeMode.set(gstate.getShadeMode() == GE_SHADE_GOURAUD ? D3DSHADE_GOURAUD : D3DSHADE_FLAT);
 		}
+
+		// We use fixed-function user clipping on D3D9, where available, for negative Z clipping.
+		if (draw_->GetDeviceCaps().clipPlanesSupported >= 1) {
+			bool wantClip = !gstate.isModeThrough() && gstate_c.submitType == SubmitType::DRAW;
+			dxstate.clipPlaneEnable.set(wantClip ? 1 : 0);
+		}
 	}
 
 	if (gstate_c.IsDirty(DIRTY_DEPTHSTENCIL_STATE)) {
@@ -211,21 +213,11 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 		ConvertStencilFuncState(stencilState);
 
 		// Set Stencil/Depth
-
-		if (gstate_c.renderMode == RASTER_MODE_COLOR_TO_DEPTH) {
-			// Enforce plain depth writing.
-			dxstate.depthTest.enable();
-			dxstate.depthFunc.set(D3DCMP_ALWAYS);
-			dxstate.depthWrite.set(true);
-			dxstate.stencilTest.disable();
-		} else if (gstate.isModeClear()) {
+		if (gstate.isModeClear()) {
 			// Depth Test
 			dxstate.depthTest.enable();
 			dxstate.depthFunc.set(D3DCMP_ALWAYS);
 			dxstate.depthWrite.set(gstate.isClearModeDepthMask());
-			if (gstate.isClearModeDepthMask()) {
-				framebufferManager_->SetDepthUpdated();
-			}
 
 			// Stencil Test
 			bool alphaMask = gstate.isClearModeAlphaMask();
@@ -239,16 +231,13 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 			} else {
 				dxstate.stencilTest.disable();
 			}
-
 		} else {
 			// Depth Test
-			if (gstate.isDepthTestEnabled()) {
+			if (!IsDepthTestEffectivelyDisabled()) {
 				dxstate.depthTest.enable();
 				dxstate.depthFunc.set(ztests[gstate.getDepthTestFunction()]);
 				dxstate.depthWrite.set(gstate.isDepthWriteEnabled());
-				if (gstate.isDepthWriteEnabled()) {
-					framebufferManager_->SetDepthUpdated();
-				}
+				UpdateEverUsedEqualDepth(gstate.getDepthTestFunction());
 			} else {
 				dxstate.depthTest.disable();
 			}
@@ -261,6 +250,24 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 				dxstate.stencilCompareMask.set(stencilState.testMask);
 				dxstate.stencilOp.set(stencilOps[stencilState.sFail], stencilOps[stencilState.zFail], stencilOps[stencilState.zPass]);
 				dxstate.stencilWriteMask.set(stencilState.writeMask);
+
+				// Nasty special case for Spongebob and similar where it tries to write zeros to alpha/stencil during
+				// depth-fail. We can't write to alpha then because the pixel is killed. However, we can invert the depth
+				// test and modify the alpha function...
+				if (SpongebobDepthInverseConditions(stencilState)) {
+					dxstate.blend.set(true);
+					dxstate.blendEquation.set(D3DBLENDOP_ADD, D3DBLENDOP_ADD);
+					dxstate.blendFunc.set(D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ZERO);
+					dxstate.colorMask.set(8);
+
+					dxstate.depthFunc.set(D3DCMP_LESS);
+					dxstate.stencilFunc.set(D3DCMP_ALWAYS);
+					// Invert
+					dxstate.stencilOp.set(D3DSTENCILOP_ZERO, D3DSTENCILOP_KEEP, D3DSTENCILOP_ZERO);
+
+					dirtyRequiresRecheck_ |= DIRTY_BLEND_STATE | DIRTY_DEPTHSTENCIL_STATE;
+					gstate_c.Dirty(DIRTY_BLEND_STATE | DIRTY_DEPTHSTENCIL_STATE);
+				}
 			} else {
 				dxstate.stencilTest.disable();
 			}
@@ -273,6 +280,7 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 			framebufferManager_->GetRenderWidth(), framebufferManager_->GetRenderHeight(),
 			framebufferManager_->GetTargetBufferWidth(), framebufferManager_->GetTargetBufferHeight(),
 			vpAndScissor);
+		UpdateCachedViewportState(vpAndScissor);
 
 		dxstate.scissorTest.enable();
 		dxstate.scissorRect.set(vpAndScissor.scissorX, vpAndScissor.scissorY, vpAndScissor.scissorX + vpAndScissor.scissorW, vpAndScissor.scissorY + vpAndScissor.scissorH);
@@ -281,15 +289,11 @@ void DrawEngineDX9::ApplyDrawState(int prim) {
 		float depthMax = vpAndScissor.depthRangeMax;
 
 		dxstate.viewport.set(vpAndScissor.viewportX, vpAndScissor.viewportY, vpAndScissor.viewportW, vpAndScissor.viewportH, depthMin, depthMax);
-		if (vpAndScissor.dirtyProj) {
-			gstate_c.Dirty(DIRTY_PROJMATRIX);
-		}
-		if (vpAndScissor.dirtyDepth) {
-			gstate_c.Dirty(DIRTY_DEPTHRANGE);
-		}
 	}
 
 	gstate_c.Clean(DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_DEPTHSTENCIL_STATE | DIRTY_RASTER_STATE | DIRTY_BLEND_STATE);
+	gstate_c.Dirty(dirtyRequiresRecheck_);
+	dirtyRequiresRecheck_ = 0;
 }
 
 void DrawEngineDX9::ApplyDrawStateLate() {

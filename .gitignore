@@ -129,3 +129,7 @@ CMakeFiles
 
 # Clangd 
 .cache/
+build
+libretro/obj/local
+
+ppsspp_retroachievements.dat

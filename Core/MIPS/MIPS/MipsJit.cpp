@@ -60,7 +60,9 @@ void MipsJit::DoState(PointerWrap &p)
 	Do(p, js.startDefaultPrefix);
 	if (s >= 2) {
 		Do(p, js.hasSetRounding);
-		js.lastSetRounding = 0;
+		if (p.mode == PointerWrap::MODE_READ) {
+			js.lastSetRounding = 0;
+		}
 	} else {
 		js.hasSetRounding = 1;
 	}
@@ -97,9 +99,10 @@ void MipsJit::ClearCache()
 	//GenerateFixedCode();
 }
 
-void MipsJit::InvalidateCacheAt(u32 em_address, int length)
-{
-	blocks.InvalidateICache(em_address, length);
+void MipsJit::InvalidateCacheAt(u32 em_address, int length) {
+	if (blocks.RangeMayHaveEmuHacks(em_address, em_address + length)) {
+		blocks.InvalidateICache(em_address, length);
+	}
 }
 
 void MipsJit::EatInstruction(MIPSOpcode op) {

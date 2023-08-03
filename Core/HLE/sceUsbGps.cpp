@@ -21,6 +21,7 @@
 #include <ctime>
 
 #include "Common/System/System.h"
+#include "Common/System/Request.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Core/HLE/HLE.h"
@@ -51,7 +52,7 @@ void __UsbGpsDoState(PointerWrap &p) {
 
 void __UsbGpsShutdown() {
     gpsStatus = GPS_STATE_OFF;
-    System_SendMessage("gps_command", "close");
+    System_GPSCommand("close");
 };
 
 static int sceUsbGpsGetInitDataLocation(u32 addr) {
@@ -59,8 +60,8 @@ static int sceUsbGpsGetInitDataLocation(u32 addr) {
 }
 
 static int sceUsbGpsGetState(u32 stateAddr) {
-	if (Memory::IsValidAddress(stateAddr)) {
-		Memory::Write_U32(gpsStatus, stateAddr);
+	if (Memory::IsValidRange(stateAddr, 4)) {
+		Memory::WriteUnchecked_U32(gpsStatus, stateAddr);
 	}
 	return 0;
 }
@@ -69,23 +70,27 @@ static int sceUsbGpsOpen() {
 	ERROR_LOG(HLE, "UNIMPL sceUsbGpsOpen");
 	GPS::init();
 	gpsStatus = GPS_STATE_ON;
-	System_SendMessage("gps_command", "open");
+	System_GPSCommand("open");
 	return 0;
 }
 
 static int sceUsbGpsClose() {
 	ERROR_LOG(HLE, "UNIMPL sceUsbGpsClose");
 	gpsStatus = GPS_STATE_OFF;
-	System_SendMessage("gps_command", "close");
+	System_GPSCommand("close");
 	return 0;
 }
 
 static int sceUsbGpsGetData(u32 gpsDataAddr, u32 satDataAddr) {
-	if (Memory::IsValidRange(gpsDataAddr, sizeof(GpsData))) {
-		Memory::WriteStruct(gpsDataAddr, GPS::getGpsData());
+	auto gpsData = PSPPointer<GpsData>::Create(gpsDataAddr);
+	if (gpsData.IsValid()) {
+		*gpsData = *GPS::getGpsData();
+		gpsData.NotifyWrite("UsbGpsGetData");
 	}
-	if (Memory::IsValidRange(satDataAddr, sizeof(SatData))) {
-		Memory::WriteStruct(satDataAddr, GPS::getSatData());
+	auto satData = PSPPointer<SatData>::Create(satDataAddr);
+	if (satData.IsValid()) {
+		*satData = *GPS::getSatData();
+		gpsData.NotifyWrite("UsbGpsGetData");
 	}
 	return 0;
 }

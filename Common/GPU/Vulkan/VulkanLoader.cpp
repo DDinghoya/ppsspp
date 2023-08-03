@@ -23,6 +23,7 @@
 #include "Common/GPU/Vulkan/VulkanLoader.h"
 #include "Common/Log.h"
 #include "Common/System/System.h"
+#include "Common/VR/PPSSPPVR.h"
 
 #if !PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(SWITCH)
 #include <dlfcn.h>
@@ -65,8 +66,10 @@ PFN_vkBindImageMemory vkBindImageMemory;
 PFN_vkBindImageMemory2 vkBindImageMemory2;
 PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
 PFN_vkGetBufferMemoryRequirements2 vkGetBufferMemoryRequirements2;
+PFN_vkGetDeviceBufferMemoryRequirements vkGetDeviceBufferMemoryRequirements;
 PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
 PFN_vkGetImageMemoryRequirements2 vkGetImageMemoryRequirements2;
+PFN_vkGetDeviceImageMemoryRequirements vkGetDeviceImageMemoryRequirements;
 PFN_vkCreateFence vkCreateFence;
 PFN_vkDestroyFence vkDestroyFence;
 PFN_vkGetFenceStatus vkGetFenceStatus;
@@ -192,6 +195,11 @@ PFN_vkCreateWaylandSurfaceKHR vkCreateWaylandSurfaceKHR;
 #endif
 #if defined(VK_USE_PLATFORM_DISPLAY_KHR)
 PFN_vkCreateDisplayPlaneSurfaceKHR vkCreateDisplayPlaneSurfaceKHR;
+PFN_vkGetPhysicalDeviceDisplayPropertiesKHR vkGetPhysicalDeviceDisplayPropertiesKHR;
+PFN_vkGetPhysicalDeviceDisplayPlanePropertiesKHR vkGetPhysicalDeviceDisplayPlanePropertiesKHR;
+PFN_vkGetDisplayModePropertiesKHR vkGetDisplayModePropertiesKHR;
+PFN_vkGetDisplayPlaneSupportedDisplaysKHR vkGetDisplayPlaneSupportedDisplaysKHR;
+PFN_vkGetDisplayPlaneCapabilitiesKHR vkGetDisplayPlaneCapabilitiesKHR;
 #endif
 
 PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
@@ -215,11 +223,14 @@ PFN_vkCmdInsertDebugUtilsLabelEXT	 vkCmdInsertDebugUtilsLabelEXT;
 PFN_vkSetDebugUtilsObjectNameEXT     vkSetDebugUtilsObjectNameEXT;
 PFN_vkSetDebugUtilsObjectTagEXT      vkSetDebugUtilsObjectTagEXT;
 
-PFN_vkGetMemoryHostPointerPropertiesEXT vkGetMemoryHostPointerPropertiesEXT;
+// Assorted other extensions.
 PFN_vkGetBufferMemoryRequirements2KHR vkGetBufferMemoryRequirements2KHR;
 PFN_vkGetImageMemoryRequirements2KHR vkGetImageMemoryRequirements2KHR;
 PFN_vkGetPhysicalDeviceProperties2KHR vkGetPhysicalDeviceProperties2KHR;
 PFN_vkGetPhysicalDeviceFeatures2KHR vkGetPhysicalDeviceFeatures2KHR;
+PFN_vkCreateRenderPass2KHR vkCreateRenderPass2KHR;
+PFN_vkWaitForPresentKHR vkWaitForPresentKHR;
+
 } // namespace PPSSPP_VK
 
 using namespace PPSSPP_VK;
@@ -236,7 +247,6 @@ static VulkanLibraryHandle vulkanLibrary;
 typedef void *VulkanLibraryHandle;
 static VulkanLibraryHandle vulkanLibrary;
 #endif
-const char *VulkanResultToString(VkResult res);
 
 bool g_vulkanAvailabilityChecked = false;
 bool g_vulkanMayBeAvailable = false;
@@ -271,6 +281,8 @@ static VulkanLibraryHandle VulkanLoadLibrary(const char *logname) {
 #if PPSSPP_PLATFORM(SWITCH)
 	// Always unavailable, for now.
 	return nullptr;
+#elif PPSSPP_PLATFORM(UWP)
+	return nullptr;
 #elif PPSSPP_PLATFORM(WINDOWS)
 	return LoadLibrary(L"vulkan-1.dll");
 #else
@@ -300,16 +312,16 @@ static void VulkanFreeLibrary(VulkanLibraryHandle &h) {
 }
 
 void VulkanSetAvailable(bool available) {
+	INFO_LOG(G3D, "Forcing Vulkan availability to true");
 	g_vulkanAvailabilityChecked = true;
 	g_vulkanMayBeAvailable = available;
 }
 
 bool VulkanMayBeAvailable() {
-
-#ifdef OPENXR
-	//unsupported at the moment
-	return false;
-#endif
+	// Unsupported in VR at the moment
+	if (IsVREnabled()) {
+		return false;
+	}
 
 	if (g_vulkanAvailabilityChecked) {
 		return g_vulkanMayBeAvailable;
@@ -461,6 +473,7 @@ bool VulkanMayBeAvailable() {
 		case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
 		case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
 			anyGood = true;
+			INFO_LOG(G3D, "VulkanMayBeAvailable: Eligible device found: '%s'", props.deviceName);
 			break;
 		default:
 			INFO_LOG(G3D, "VulkanMayBeAvailable: Ineligible device found and ignored: '%s'", props.deviceName);
@@ -485,8 +498,9 @@ bail:
 	}
 	if (lib) {
 		VulkanFreeLibrary(lib);
-	} else {
-		ERROR_LOG(G3D, "Vulkan with working device not detected.");
+	}
+	if (!g_vulkanMayBeAvailable) {
+		WARN_LOG(G3D, "Vulkan with working device not detected.");
 	}
 	return g_vulkanMayBeAvailable;
 }
@@ -560,6 +574,11 @@ void VulkanLoadInstanceFunctions(VkInstance instance, const VulkanExtensions &en
 #endif
 #if defined(VK_USE_PLATFORM_DISPLAY_KHR)
 	LOAD_INSTANCE_FUNC(instance, vkCreateDisplayPlaneSurfaceKHR);
+	LOAD_INSTANCE_FUNC(instance, vkGetPhysicalDeviceDisplayPropertiesKHR);
+	LOAD_INSTANCE_FUNC(instance, vkGetPhysicalDeviceDisplayPlanePropertiesKHR);
+	LOAD_INSTANCE_FUNC(instance, vkGetDisplayModePropertiesKHR);
+	LOAD_INSTANCE_FUNC(instance, vkGetDisplayPlaneSupportedDisplaysKHR);
+	LOAD_INSTANCE_FUNC(instance, vkGetDisplayPlaneCapabilitiesKHR);
 #endif
 
 	LOAD_INSTANCE_FUNC(instance, vkDestroySurfaceKHR);
@@ -603,8 +622,10 @@ void VulkanLoadDeviceFunctions(VkDevice device, const VulkanExtensions &enabledE
 	LOAD_DEVICE_FUNC(device, vkBindImageMemory2);
 	LOAD_DEVICE_FUNC(device, vkGetBufferMemoryRequirements);
 	LOAD_DEVICE_FUNC(device, vkGetBufferMemoryRequirements2);
+	LOAD_DEVICE_FUNC(device, vkGetDeviceBufferMemoryRequirements);
 	LOAD_DEVICE_FUNC(device, vkGetImageMemoryRequirements);
 	LOAD_DEVICE_FUNC(device, vkGetImageMemoryRequirements2);
+	LOAD_DEVICE_FUNC(device, vkGetDeviceImageMemoryRequirements);
 	LOAD_DEVICE_FUNC(device, vkCreateFence);
 	LOAD_DEVICE_FUNC(device, vkDestroyFence);
 	LOAD_DEVICE_FUNC(device, vkResetFences);
@@ -707,16 +728,64 @@ void VulkanLoadDeviceFunctions(VkDevice device, const VulkanExtensions &enabledE
 	LOAD_DEVICE_FUNC(device, vkCmdNextSubpass);
 	LOAD_DEVICE_FUNC(device, vkCmdEndRenderPass);
 	LOAD_DEVICE_FUNC(device, vkCmdExecuteCommands);
+	LOAD_DEVICE_FUNC(device, vkWaitForPresentKHR);
 
-	if (enabledExtensions.EXT_external_memory_host) {
-		LOAD_DEVICE_FUNC(device, vkGetMemoryHostPointerPropertiesEXT);
-	}
 	if (enabledExtensions.KHR_dedicated_allocation) {
 		LOAD_DEVICE_FUNC(device, vkGetBufferMemoryRequirements2KHR);
 		LOAD_DEVICE_FUNC(device, vkGetImageMemoryRequirements2KHR);
+	}
+	if (enabledExtensions.KHR_create_renderpass2) {
+		LOAD_DEVICE_FUNC(device, vkCreateRenderPass2KHR);
 	}
 }
 
 void VulkanFree() {
 	VulkanFreeLibrary(vulkanLibrary);
+}
+
+const char *VulkanResultToString(VkResult res) {
+	static char temp[128]{};
+	switch (res) {
+	case VK_NOT_READY: return "VK_NOT_READY";
+	case VK_TIMEOUT: return "VK_TIMEOUT";
+	case VK_EVENT_SET: return "VK_EVENT_SET";
+	case VK_EVENT_RESET: return "VK_EVENT_RESET";
+	case VK_INCOMPLETE: return "VK_INCOMPLETE";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+	case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+	case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+	case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR: return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+	case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+	case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY_KHR";
+	case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR";
+	case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+	case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN (-13)";
+	case VK_ERROR_FRAGMENTATION: return "VK_ERROR_FRAGMENTATION";
+	case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+	case VK_PIPELINE_COMPILE_REQUIRED: return "VK_PIPELINE_COMPILE_REQUIRED";
+	case VK_ERROR_VALIDATION_FAILED_EXT: return "VK_ERROR_VALIDATION_FAILED_EXT";
+	case VK_ERROR_INVALID_SHADER_NV: return "VK_ERROR_INVALID_SHADER_NV";
+	case VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT: return "VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT";
+	case VK_ERROR_NOT_PERMITTED_KHR: return "VK_ERROR_NOT_PERMITTED_KHR";
+	case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: return "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT";
+	case VK_THREAD_IDLE_KHR: return "VK_THREAD_IDLE_KHR";
+	case VK_THREAD_DONE_KHR: return "VK_THREAD_DONE_KHR";
+	case VK_OPERATION_DEFERRED_KHR: return "VK_OPERATION_DEFERRED_KHR";
+	case VK_OPERATION_NOT_DEFERRED_KHR: return "VK_OPERATION_NOT_DEFERRED_KHR";
+	default:
+		// This isn't thread safe, but this should be rare, and at worst, we'll get a jumble of two messages.
+		snprintf(temp, sizeof(temp), "VK_ERROR_???: 0x%08x", (u32)res);
+		return temp;
+	}
 }

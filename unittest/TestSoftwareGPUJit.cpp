@@ -18,6 +18,7 @@
 #include "Common/Data/Random/Rng.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
+#include "GPU/Software/BinManager.h"
 #include "GPU/Software/DrawPixel.h"
 #include "GPU/Software/Sampler.h"
 #include "GPU/Software/SoftGpu.h"
@@ -25,21 +26,22 @@
 static bool TestSamplerJit() {
 	using namespace Sampler;
 	SamplerJitCache *cache = new SamplerJitCache();
+	BinManager binner;
 
 	auto GetLinear = [&](SamplerID &id) {
 		id.linear = true;
 		id.fetch = false;
-		return cache->GetLinear(id);
+		return cache->GetLinear(id, &binner);
 	};
 	auto GetNearest = [&](SamplerID &id) {
 		id.linear = false;
 		id.fetch = false;
-		return cache->GetNearest(id);
+		return cache->GetNearest(id, &binner);
 	};
 	auto GetFetch = [&](SamplerID &id) {
 		id.linear = false;
 		id.fetch = true;
-		return cache->GetFetch(id);
+		return cache->GetFetch(id, &binner);
 	};
 
 	GMRng rng;
@@ -48,8 +50,10 @@ static bool TestSamplerJit() {
 	bool header = false;
 
 	u8 **tptr = new u8 *[8];
-	int *bufw = new int[8];
+	uint16_t *bufw = new uint16_t[8];
 	u8 *clut = new u8[1024];
+	memset(clut, 0, 1024);
+
 	for (int i = 0; i < 8; ++i) {
 		tptr[i] = new u8[1024 * 1024 * 4];
 		memset(tptr[i], 0, 1024 * 1024 * 4);
@@ -87,8 +91,8 @@ static bool TestSamplerJit() {
 
 		// Try running each to make sure they don't trivially crash.
 		const auto primArg = Rasterizer::ToVec4IntArg(Math3D::Vec4<int>(127, 127, 127, 127));
-		linearFunc(0.0f, 0.0f, 0, 0, primArg, tptr, bufw, 1, 7, id);
-		nearestFunc(0.0f, 0.0f, 0, 0, primArg, tptr, bufw, 1, 7, id);
+		linearFunc(0.0f, 0.0f, primArg, tptr, bufw, 1, 7, id);
+		nearestFunc(0.0f, 0.0f, primArg, tptr, bufw, 1, 7, id);
 		fetchFunc(0, 0, tptr[0], bufw[0], 1, id);
 	}
 
@@ -109,6 +113,7 @@ static bool TestSamplerJit() {
 static bool TestPixelJit() {
 	using namespace Rasterizer;
 	PixelJitCache *cache = new PixelJitCache();
+	BinManager binner;
 
 	GMRng rng;
 	int successes = 0;
@@ -119,6 +124,8 @@ static bool TestPixelJit() {
 	u16 *zb_data = new u16[512 * 2];
 	fb.as32 = fb_data;
 	depthbuf.as16 = zb_data;
+	memset(fb_data, 0, sizeof(u32) * 512 * 2);
+	memset(zb_data, 0, sizeof(u16) * 512 * 2);
 
 	for (int i = 0; i < count; ) {
 		PixelFuncID id;
@@ -130,7 +137,7 @@ static bool TestPixelJit() {
 			continue;
 		i++;
 
-		SingleFunc func = cache->GetSingle(id);
+		SingleFunc func = cache->GetSingle(id, &binner);
 		SingleFunc genericFunc = cache->GenericSingle(id);
 		if (func != genericFunc) {
 			successes++;

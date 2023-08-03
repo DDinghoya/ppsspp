@@ -32,13 +32,14 @@
 struct AxisInput;
 
 class AsyncImageFileView;
-class OnScreenMessagesView;
 class ChatMenu;
 
 class EmuScreen : public UIScreen {
 public:
 	EmuScreen(const Path &filename);
 	~EmuScreen();
+
+	const char *tag() const override { return "Emu"; }
 
 	void update() override;
 	void render() override;
@@ -48,9 +49,11 @@ public:
 	void sendMessage(const char *msg, const char *value) override;
 	void resized() override;
 
-	bool touch(const TouchInput &touch) override;
-	bool key(const KeyInput &key) override;
-	bool axis(const AxisInput &axis) override;
+	// Note: Unlike your average boring UIScreen, here we override the Unsync* functions
+	// to get minimal latency and full control. We forward to UIScreen when needed.
+	void UnsyncTouch(const TouchInput &touch) override;
+	bool UnsyncKey(const KeyInput &key) override;
+	void UnsyncAxis(const AxisInput &axis) override;
 
 private:
 	void CreateViews() override;
@@ -66,8 +69,8 @@ private:
 	bool hasVisibleUI();
 	void renderUI();
 
-	void onVKeyDown(int virtualKeyCode);
-	void onVKeyUp(int virtualKeyCode);
+	void onVKey(int virtualKeyCode, bool down);
+	void onVKeyAnalog(int virtualKeyCode, float value);
 
 	void autoLoad();
 	void checkPowerDown();
@@ -109,7 +112,6 @@ private:
 	ChatMenu *chatMenu_ = nullptr;
 
 	UI::Button *cardboardDisableButton_ = nullptr;
-	OnScreenMessagesView *onScreenMessagesView_ = nullptr;
 
 	ControlMapper controlMapper_;
 };

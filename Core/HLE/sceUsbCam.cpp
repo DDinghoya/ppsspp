@@ -21,6 +21,7 @@
 #include "ppsspp_config.h"
 
 #include "Common/System/System.h"
+#include "Common/System/Request.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Core/HLE/HLE.h"
@@ -113,11 +114,12 @@ static int getCameraResolution(Camera::ConfigType type, int *width, int *height)
 
 
 static int sceUsbCamSetupMic(u32 paramAddr, u32 workareaAddr, int wasize) {
-	INFO_LOG(HLE, "sceUsbCamSetupMic");
-	if (Memory::IsValidRange(paramAddr, sizeof(PspUsbCamSetupMicParam))) {
-		Memory::ReadStruct(paramAddr, &config->micParam);
+	auto param = PSPPointer<PspUsbCamSetupMicParam>::Create(paramAddr);
+	if (param.IsValid()) {
+		config->micParam = *param;
+		param.NotifyRead("UsbCamSetupMic");
 	}
-	return 0;
+	return hleLogSuccessInfoI(SCEMISC, 0);
 }
 
 static int sceUsbCamStartMic() {
@@ -155,16 +157,20 @@ static int sceUsbCamGetMicDataLength() {
 }
 
 static int sceUsbCamSetupVideo(u32 paramAddr, u32 workareaAddr, int wasize) {
-	if (Memory::IsValidRange(paramAddr, sizeof(PspUsbCamSetupVideoParam))) {
-		Memory::ReadStruct(paramAddr, &config->videoParam);
+	auto param = PSPPointer<PspUsbCamSetupVideoParam>::Create(paramAddr);
+	if (param.IsValid()) {
+		config->videoParam = *param;
+		param.NotifyRead("UsbCamSetupVideo");
 	}
 	config->type = Camera::ConfigType::CfVideo;
 	return 0;
 }
 
 static int sceUsbCamSetupVideoEx(u32 paramAddr, u32 workareaAddr, int wasize) {
-	if (Memory::IsValidRange(paramAddr, sizeof(PspUsbCamSetupVideoExParam))) {
-		Memory::ReadStruct(paramAddr, &config->videoExParam);
+	auto param = PSPPointer<PspUsbCamSetupVideoExParam>::Create(paramAddr);
+	if (param.IsValid()) {
+		config->videoExParam = *param;
+		param.NotifyRead("UsbCamSetupVideoEx");
 	}
 	config->type = Camera::ConfigType::CfVideoEx;
 	return 0;
@@ -222,8 +228,10 @@ static int sceUsbCamPollReadVideoFrameEnd() {
 
 static int sceUsbCamSetupStill(u32 paramAddr) {
 	INFO_LOG(HLE, "UNIMPL sceUsbCamSetupStill");
-	if (Memory::IsValidRange(paramAddr, sizeof(PspUsbCamSetupStillParam))) {
-		Memory::ReadStruct(paramAddr, &config->stillParam);
+	auto param = PSPPointer<PspUsbCamSetupStillParam>::Create(paramAddr);
+	if (param.IsValid()) {
+		config->stillParam = *param;
+		param.NotifyRead("UsbCamSetupStill");
 	}
 	config->type = Camera::ConfigType::CfStill;
 	return 0;
@@ -231,8 +239,10 @@ static int sceUsbCamSetupStill(u32 paramAddr) {
 
 static int sceUsbCamSetupStillEx(u32 paramAddr) {
 	INFO_LOG(HLE, "UNIMPL sceUsbCamSetupStillEx");
-	if (Memory::IsValidRange(paramAddr, sizeof(PspUsbCamSetupStillExParam))) {
-		Memory::ReadStruct(paramAddr, &config->stillExParam);
+	auto param = PSPPointer<PspUsbCamSetupStillExParam>::Create(paramAddr);
+	if (param.IsValid()) {
+		config->stillExParam = *param;
+		param.NotifyRead("UsbCamSetupStillEx");
 	}
 	config->type = Camera::ConfigType::CfStillEx;
 	return 0;
@@ -323,7 +333,7 @@ std::vector<std::string> Camera::getDeviceList() {
 			return winCamera->getDeviceList();
 		}
 	#elif PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
-		return __cameraGetDeviceList();
+		return System_GetCameraDeviceList();
 	#elif defined(USING_QT_UI) // Qt:macOS / Qt:Linux
 		return __qt_getDeviceList();
 	#elif PPSSPP_PLATFORM(LINUX) // SDL:Linux
@@ -351,7 +361,7 @@ int Camera::startCapture() {
 	#elif PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS) || defined(USING_QT_UI)
 		char command[40] = {0};
 		snprintf(command, sizeof(command), "startVideo_%dx%d", width, height);
-		System_SendMessage("camera_command", command);
+		System_CameraCommand(command);
 	#elif PPSSPP_PLATFORM(LINUX)
 		__v4l_startCapture(width, height);
 	#else
@@ -367,7 +377,7 @@ int Camera::stopCapture() {
 			winCamera->sendMessage({ CAPTUREDEVIDE_COMMAND::STOP, nullptr });
 		}
 	#elif PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS) || defined(USING_QT_UI)
-		System_SendMessage("camera_command", "stopVideo");
+		System_CameraCommand("stopVideo");
 	#elif PPSSPP_PLATFORM(LINUX)
 		__v4l_stopCapture();
 	#else

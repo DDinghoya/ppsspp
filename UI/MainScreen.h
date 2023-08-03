@@ -51,6 +51,7 @@ public:
 
 	void FocusGame(const Path &gamePath);
 	void SetPath(const Path &path);
+	void ApplySearchFilter(const std::string &filter);
 	void Draw(UIContext &dc) override;
 	void Update() override;
 
@@ -58,6 +59,7 @@ protected:
 	virtual bool DisplayTopBar();
 	virtual bool HasSpecialFiles(std::vector<Path> &filenames);
 	virtual Path HomePath();
+	void ApplySearchFilter();
 
 	void Refresh();
 
@@ -80,14 +82,23 @@ private:
 	UI::EventReturn OnRecentClear(UI::EventParams &e);
 	UI::EventReturn OnHomebrewStore(UI::EventParams &e);
 
+	enum class SearchState {
+		MATCH,
+		MISMATCH,
+		PENDING,
+	};
+
 	UI::ViewGroup *gameList_ = nullptr;
 	PathBrowser path_;
 	bool *gridStyle_ = nullptr;
 	BrowseFlags browseFlags_;
 	std::string lastText_;
 	std::string lastLink_;
+	std::string searchFilter_;
+	std::vector<SearchState> searchStates_;
 	Path focusGamePath_;
 	bool listingPending_ = false;
+	bool searchPending_ = false;
 	float lastScale_ = 1.0f;
 	bool lastLayoutWasGrid_ = true;
 	ScreenManager *screenManager_;
@@ -102,8 +113,12 @@ public:
 
 	bool isTopLevel() const override { return true; }
 
+	const char *tag() const override { return "Main"; }
+
 	// Horrible hack to show the demos & homebrew tab after having installed a game from a zip file.
 	static bool showHomebrewTab;
+
+	bool key(const KeyInput &touch) override;
 
 protected:
 	void CreateViews() override;
@@ -112,7 +127,6 @@ protected:
 	void sendMessage(const char *message, const char *value) override;
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
 
-	bool UseVerticalLayout() const;
 	bool DrawBackgroundFor(UIContext &dc, const Path &gamePath, float progress);
 
 	UI::EventReturn OnGameSelected(UI::EventParams &e);
@@ -147,13 +161,16 @@ protected:
 	bool lastVertical_;
 	bool confirmedTemporary_ = false;
 	UI::ScrollView *scrollAllGames_ = nullptr;
+	bool searchKeyModifier_ = false;
+	bool searchChanged_ = false;
+	std::string searchFilter_;
 
 	friend class RemoteISOBrowseScreen;
 };
 
 class UmdReplaceScreen : public UIDialogScreenWithBackground {
 public:
-	UmdReplaceScreen() {}
+	const char *tag() const override { return "UmdReplace"; }
 
 protected:
 	void CreateViews() override;
@@ -164,7 +181,6 @@ private:
 	UI::EventReturn OnGameSelected(UI::EventParams &e);
 	UI::EventReturn OnGameSelectedInstant(UI::EventParams &e);
 
-	UI::EventReturn OnCancel(UI::EventParams &e);
 	UI::EventReturn OnGameSettings(UI::EventParams &e);
 };
 
@@ -173,6 +189,8 @@ public:
 	GridSettingsScreen(std::string label) : PopupScreen(label) {}
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 	UI::Event OnRecentChanged;
+
+	const char *tag() const override { return "GridSettings"; }
 
 private:
 	UI::EventReturn GridPlusClick(UI::EventParams &e);

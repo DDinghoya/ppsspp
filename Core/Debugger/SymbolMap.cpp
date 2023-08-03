@@ -31,6 +31,9 @@
 
 #include <algorithm>
 #include <memory>
+#ifndef NO_ARMIPS
+#include <string_view>
+#endif
 #include <unordered_map>
 
 #include "zlib.h"
@@ -43,7 +46,19 @@
 #include "Core/MemMap.h"
 #include "Core/Debugger/SymbolMap.h"
 
+#ifndef NO_ARMIPS
 #include "ext/armips/Core/Assembler.h"
+#else
+struct Identifier {
+	explicit Identifier() {}
+	explicit Identifier(const std::string &s) {}
+};
+
+struct LabelDefinition {
+	Identifier name;
+	int64_t value;
+};
+#endif
 
 SymbolMap *g_symbolMap;
 
@@ -126,9 +141,9 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 
 		if (!started) continue;
 
-		u32 address = -1, size, vaddress = -1;
+		u32 address = -1, size = 0, vaddress = -1;
 		int moduleIndex = 0;
-		int typeInt;
+		int typeInt = ST_NONE;
 		SymbolType type;
 		char name[128] = {0};
 
@@ -144,7 +159,9 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 			continue;
 		}
 
-		sscanf(line, "%08x %08x %x %i %127c", &address, &size, &vaddress, &typeInt, name);
+		int matched = sscanf(line, "%08x %08x %x %i %127c", &address, &size, &vaddress, &typeInt, name);
+		if (matched < 1)
+			continue;
 		type = (SymbolType) typeInt;
 		if (!hasModules) {
 			if (!Memory::IsValidAddress(vaddress)) {
@@ -189,12 +206,12 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 	return started;
 }
 
-void SymbolMap::SaveSymbolMap(const Path &filename) const {
+bool SymbolMap::SaveSymbolMap(const Path &filename) const {
 	std::lock_guard<std::recursive_mutex> guard(lock_);
 
 	// Don't bother writing a blank file.
 	if (!File::Exists(filename) && functions.empty() && data.empty()) {
-		return;
+		return true;
 	}
 
 	// TODO(scoped): Use gzdopen
@@ -205,7 +222,7 @@ void SymbolMap::SaveSymbolMap(const Path &filename) const {
 #endif
 
 	if (f == Z_NULL)
-		return;
+		return false;
 
 	gzprintf(f, ".text\n");
 
@@ -224,6 +241,7 @@ void SymbolMap::SaveSymbolMap(const Path &filename) const {
 		gzprintf(f, "%08x %08x %x %i %s\n", e.start, e.size, e.module, ST_DATA, GetLabelNameRel(e.start, e.module));
 	}
 	gzclose(f);
+	return true;
 }
 
 bool SymbolMap::LoadNocashSym(const Path &filename) {
@@ -439,7 +457,7 @@ void SymbolMap::AddModule(const char *name, u32 address, u32 size) {
 			// Just reactivate that one.
 			it->start = address;
 			it->size = size;
-			activeModuleEnds.insert(std::make_pair(it->start + it->size, *it));
+			activeModuleEnds.emplace(it->start + it->size, *it);
 			activeNeedUpdate_ = true;
 			return;
 		}
@@ -452,7 +470,7 @@ void SymbolMap::AddModule(const char *name, u32 address, u32 size) {
 	mod.index = (int)modules.size() + 1;
 
 	modules.push_back(mod);
-	activeModuleEnds.insert(std::make_pair(mod.start + mod.size, mod));
+	activeModuleEnds.emplace(mod.start + mod.size, mod);
 	activeNeedUpdate_ = true;
 }
 
@@ -559,7 +577,7 @@ void SymbolMap::AddFunction(const char* name, u32 address, u32 size, int moduleI
 		auto active = activeFunctions.find(address);
 		if (active != activeFunctions.end() && active->second.module == moduleIndex) {
 			activeFunctions.erase(active);
-			activeFunctions.insert(std::make_pair(address, existing->second));
+			activeFunctions.emplace(address, existing->second);
 		}
 	} else {
 		FunctionEntry func;
@@ -570,7 +588,7 @@ void SymbolMap::AddFunction(const char* name, u32 address, u32 size, int moduleI
 		functions[symbolKey] = func;
 
 		if (IsModuleActive(moduleIndex)) {
-			activeFunctions.insert(std::make_pair(address, func));
+			activeFunctions.emplace(address, func);
 		}
 	}
 
@@ -716,27 +734,27 @@ void SymbolMap::UpdateActiveSymbols() {
 	for (auto it = functions.begin(), end = functions.end(); it != end; ++it) {
 		const auto mod = activeModuleIndexes.find(it->second.module);
 		if (it->second.module == 0) {
-			activeFunctions.insert(std::make_pair(it->second.start, it->second));
+			activeFunctions.emplace(it->second.start, it->second);
 		} else if (mod != activeModuleIndexes.end()) {
-			activeFunctions.insert(std::make_pair(mod->second + it->second.start, it->second));
+			activeFunctions.emplace(mod->second + it->second.start, it->second);
 		}
 	}
 
 	for (auto it = labels.begin(), end = labels.end(); it != end; ++it) {
 		const auto mod = activeModuleIndexes.find(it->second.module);
 		if (it->second.module == 0) {
-			activeLabels.insert(std::make_pair(it->second.addr, it->second));
+			activeLabels.emplace(it->second.addr, it->second);
 		} else if (mod != activeModuleIndexes.end()) {
-			activeLabels.insert(std::make_pair(mod->second + it->second.addr, it->second));
+			activeLabels.emplace(mod->second + it->second.addr, it->second);
 		}
 	}
 
 	for (auto it = data.begin(), end = data.end(); it != end; ++it) {
 		const auto mod = activeModuleIndexes.find(it->second.module);
 		if (it->second.module == 0) {
-			activeData.insert(std::make_pair(it->second.start, it->second));
+			activeData.emplace(it->second.start, it->second);
 		} else if (mod != activeModuleIndexes.end()) {
-			activeData.insert(std::make_pair(mod->second + it->second.start, it->second));
+			activeData.emplace(mod->second + it->second.start, it->second);
 		}
 	}
 
@@ -757,7 +775,7 @@ bool SymbolMap::SetFunctionSize(u32 startAddress, u32 newSize) {
 		if (func != functions.end()) {
 			func->second.size = newSize;
 			activeFunctions.erase(funcInfo);
-			activeFunctions.insert(std::make_pair(startAddress, func->second));
+			activeFunctions.emplace(startAddress, func->second);
 		}
 	}
 
@@ -829,7 +847,7 @@ void SymbolMap::AddLabel(const char* name, u32 address, int moduleIndex) {
 			auto active = activeLabels.find(address);
 			if (active != activeLabels.end() && active->second.module == moduleIndex) {
 				activeLabels.erase(active);
-				activeLabels.insert(std::make_pair(address, label));
+				activeLabels.emplace(address, label);
 			}
 		}
 	} else {
@@ -840,7 +858,7 @@ void SymbolMap::AddLabel(const char* name, u32 address, int moduleIndex) {
 
 		labels[symbolKey] = label;
 		if (IsModuleActive(moduleIndex)) {
-			activeLabels.insert(std::make_pair(address, label));
+			activeLabels.emplace(address, label);
 		}
 	}
 }
@@ -864,7 +882,7 @@ void SymbolMap::SetLabelName(const char* name, u32 address) {
 			auto active = activeLabels.find(address);
 			if (active != activeLabels.end() && active->second.module == label->second.module) {
 				activeLabels.erase(active);
-				activeLabels.insert(std::make_pair(address, label->second));
+				activeLabels.emplace(address, label->second);
 			}
 		}
 	}
@@ -947,7 +965,7 @@ void SymbolMap::AddData(u32 address, u32 size, DataType type, int moduleIndex) {
 		auto active = activeData.find(address);
 		if (active != activeData.end() && active->second.module == moduleIndex) {
 			activeData.erase(active);
-			activeData.insert(std::make_pair(address, existing->second));
+			activeData.emplace(address, existing->second);
 		}
 	} else {
 		DataEntry entry;
@@ -958,7 +976,7 @@ void SymbolMap::AddData(u32 address, u32 size, DataType type, int moduleIndex) {
 
 		data[symbolKey] = entry;
 		if (IsModuleActive(moduleIndex)) {
-			activeData.insert(std::make_pair(address, entry));
+			activeData.emplace(address, entry);
 		}
 	}
 }
@@ -1037,8 +1055,9 @@ void SymbolMap::GetLabels(std::vector<LabelDefinition> &dest) {
 	for (auto it = activeLabels.begin(); it != activeLabels.end(); it++) {
 		LabelDefinition entry;
 		entry.value = it->first;
-		entry.name = ConvertUTF8ToWString(it->second.name);
-		std::transform(entry.name.begin(), entry.name.end(), entry.name.begin(), ::towlower);
+		std::string name = it->second.name;
+		std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+		entry.name = Identifier(name);
 		dest.push_back(entry);
 	}
 }

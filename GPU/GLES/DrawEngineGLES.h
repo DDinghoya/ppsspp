@@ -61,7 +61,7 @@ public:
 class DrawEngineGLES : public DrawEngineCommon {
 public:
 	DrawEngineGLES(Draw::DrawContext *draw);
-	virtual ~DrawEngineGLES();
+	~DrawEngineGLES();
 
 	void SetShaderManager(ShaderManagerGLES *shaderManager) {
 		shaderManager_ = shaderManager;
@@ -76,37 +76,31 @@ public:
 		fragmentTestCache_ = testCache;
 	}
 
-	void DeviceLost();
-	void DeviceRestore(Draw::DrawContext *draw);
+	void DeviceLost() override;
+	void DeviceRestore(Draw::DrawContext *draw) override;
 
 	void ClearTrackedVertexArrays() override {}
 
 	void BeginFrame();
 	void EndFrame();
 
-
 	// So that this can be inlined
 	void Flush() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
 		DoFlush();
 	}
 
 	void FinishDeferred() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
 		DoFlush();
 	}
 
-	bool IsCodePtrVertexDecoder(const u8 *ptr) const;
-
-	void DispatchFlush() override { Flush(); }
-
-	GLPushBuffer *GetPushVertexBuffer() {
-		return frameData_[render_->GetCurFrame()].pushVertex;
-	}
-	GLPushBuffer *GetPushIndexBuffer() {
-		return frameData_[render_->GetCurFrame()].pushIndex;
+	void DispatchFlush() override {
+		if (!numDrawCalls_)
+			return;
+		Flush();
 	}
 
 	void ClearInputLayoutMap();
@@ -114,20 +108,19 @@ public:
 	bool SupportsHWTessellation() const;
 
 protected:
-	bool UpdateUseHWTessellation(bool enable) override;
+	bool UpdateUseHWTessellation(bool enable) const override;
 
 private:
+	void Invalidate(InvalidationCallbackFlags flags);
+
 	void InitDeviceObjects();
 	void DestroyDeviceObjects();
 
 	void DoFlush();
 	void ApplyDrawState(int prim);
 	void ApplyDrawStateLate(bool setStencil, int stencilValue);
-	void ResetFramebufferRead();
 
-	GLRInputLayout *SetupDecFmtForDraw(LinkedShader *program, const DecVtxFormat &decFmt);
-
-	void *DecodeVertsToPushBuffer(GLPushBuffer *push, uint32_t *bindOffset, GLRBuffer **buf);
+	GLRInputLayout *SetupDecFmtForDraw(const DecVtxFormat &decFmt);
 
 	struct FrameData {
 		GLPushBuffer *pushVertex;
@@ -148,10 +141,11 @@ private:
 	Draw::DrawContext *draw_;
 
 	// Need to preserve the scissor for use when clearing.
-	ViewportAndScissor vpAndScissor;
+	ViewportAndScissor vpAndScissor_{};
+	// Need to preserve writemask, easiest way.
+	GenericStencilFuncState stencilState_{};
 
 	int bufferDecimationCounter_ = 0;
-
 	int lastRenderStepId_ = -1;
 
 	// Hardware tessellation

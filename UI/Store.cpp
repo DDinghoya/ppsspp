@@ -20,20 +20,27 @@
 #include "Common/UI/Screen.h"
 #include "Common/UI/Context.h"
 #include "Common/UI/ViewGroup.h"
+#include "Common/UI/IconCache.h"
 #include "Common/Render/DrawBuffer.h"
 
 #include "Common/Log.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Format/JSONReader.h"
 #include "Common/StringUtils.h"
+#include "Common/Render/ManagedTexture.h"
+#include "Common/Net/NetBuffer.h"
 #include "Core/Config.h"
 #include "Core/System.h"
 #include "Core/Util/GameManager.h"
 #include "UI/EmuScreen.h"
 #include "UI/Store.h"
-#include "UI/TextureUtil.h"
 
-const std::string storeBaseUrl = "http://store.ppsspp.org/";
+const char *storeBaseUrlHttp = "http://store.ppsspp.org/";
+const char *storeBaseUrlHttps = "https://store.ppsspp.org/";
+
+static std::string StoreBaseUrl() {
+	return System_GetPropertyBool(SYSPROP_SUPPORTS_HTTPS) ? storeBaseUrlHttps : storeBaseUrlHttp;
+}
 
 // baseUrl is assumed to have a trailing slash, and not contain any subdirectories.
 std::string ResolveUrl(std::string baseUrl, std::string url) {
@@ -51,8 +58,26 @@ std::string ResolveUrl(std::string baseUrl, std::string url) {
 
 class HttpImageFileView : public UI::View {
 public:
-	HttpImageFileView(http::Downloader *downloader, const std::string &path, UI::ImageSizeMode sizeMode = UI::IS_DEFAULT, UI::LayoutParams *layoutParams = 0)
-		: UI::View(layoutParams), path_(path), sizeMode_(sizeMode), downloader_(downloader) {}
+	HttpImageFileView(http::RequestManager *requestManager, const std::string &path, UI::ImageSizeMode sizeMode = UI::IS_DEFAULT, bool useIconCache = true, UI::LayoutParams *layoutParams = nullptr)
+		: UI::View(layoutParams), path_(path), sizeMode_(sizeMode), requestManager_(requestManager), useIconCache_(useIconCache) {
+
+		if (useIconCache && g_iconCache.MarkPending(path_)) {
+			const char *acceptMime = "image/png, image/jpeg, image/*; q=0.9, */*; q=0.8";
+			requestManager_->StartDownloadWithCallback(path_, Path(), http::ProgressBarMode::DELAYED, [&](http::Request &download) {
+				if (download.ResultCode() == 200) {
+					std::string data;
+					download.buffer().TakeAll(&data);
+					if (!data.empty()) {
+						g_iconCache.InsertIcon(path_, IconFormat::PNG, std::move(data));
+					} else {
+						g_iconCache.Cancel(path_);
+					}
+				} else {
+					g_iconCache.Cancel(path_);
+				}
+			}, acceptMime);
+		}
+	}
 
 	~HttpImageFileView() {
 		if (download_)
@@ -73,14 +98,15 @@ public:
 	const std::string &GetFilename() const { return path_; }
 
 private:
-	void DownloadCompletedCallback(http::Download &download);
+	void DownloadCompletedCallback(http::Request &download);
 
 	bool canFocus_ = false;
-	std::string path_;
+	bool useIconCache_ = false;
+	std::string path_;  // or cache key
 	uint32_t color_ = 0xFFFFFFFF;
 	UI::ImageSizeMode sizeMode_;
-	http::Downloader *downloader_;
-	std::shared_ptr<http::Download> download_;
+	http::RequestManager *requestManager_;
+	std::shared_ptr<http::Request> download_;
 
 	std::string textureData_;
 	std::unique_ptr<ManagedTexture> texture_;
@@ -97,28 +123,39 @@ void HttpImageFileView::GetContentDimensions(const UIContext &dc, float &w, floa
 		break;
 	case UI::IS_DEFAULT:
 	default:
-		if (texture_) {
-			float texw = (float)texture_->Width();
-			float texh = (float)texture_->Height();
-			w = texw;
-			h = texh;
+		if (useIconCache_) {
+			int width, height;
+			if (g_iconCache.GetDimensions(path_, &width, &height)) {
+				w = width;
+				h = height;
+			} else {
+				w = 16;
+				h = 16;
+			}
 		} else {
-			w = 16;
-			h = 16;
+			if (texture_) {
+				float texw = (float)texture_->Width();
+				float texh = (float)texture_->Height();
+				w = texw;
+				h = texh;
+			} else {
+				w = 16;
+				h = 16;
+			}
 		}
 		break;
 	}
 }
 
 void HttpImageFileView::SetFilename(std::string filename) {
-	if (path_ != filename) {
+	if (!useIconCache_ && path_ != filename) {
 		textureFailed_ = false;
 		path_ = filename;
 		texture_.reset(nullptr);
 	}
 }
 
-void HttpImageFileView::DownloadCompletedCallback(http::Download &download) {
+void HttpImageFileView::DownloadCompletedCallback(http::Request &download) {
 	if (download.IsCancelled()) {
 		// We were probably destroyed. Can't touch "this" (heh).
 		return;
@@ -132,19 +169,21 @@ void HttpImageFileView::DownloadCompletedCallback(http::Download &download) {
 
 void HttpImageFileView::Draw(UIContext &dc) {
 	using namespace Draw;
-	if (!texture_ && !textureFailed_ && !path_.empty() && !download_) {
-		auto cb = std::bind(&HttpImageFileView::DownloadCompletedCallback, this, std::placeholders::_1);
-		const char *acceptMime = "image/png, image/jpeg, image/*; q=0.9, */*; q=0.8";
-		download_ = downloader_->StartDownloadWithCallback(path_, Path(), cb, acceptMime);
-		download_->SetHidden(true);
-	}
 
-	if (!textureData_.empty()) {
-		texture_ = CreateTextureFromFileData(dc.GetDrawContext(), (const uint8_t *)(textureData_.data()), (int)textureData_.size(), DETECT, false, "store_icon");
-		if (!texture_)
-			textureFailed_ = true;
-		textureData_.clear();
-		download_.reset();
+	if (!useIconCache_) {
+		if (!texture_ && !textureFailed_ && !path_.empty() && !download_) {
+			auto cb = std::bind(&HttpImageFileView::DownloadCompletedCallback, this, std::placeholders::_1);
+			const char *acceptMime = "image/png, image/jpeg, image/*; q=0.9, */*; q=0.8";
+			requestManager_->StartDownloadWithCallback(path_, Path(), http::ProgressBarMode::NONE, cb, acceptMime);
+		}
+
+		if (!textureData_.empty()) {
+			texture_ = CreateTextureFromFileData(dc.GetDrawContext(), (const uint8_t *)(textureData_.data()), (int)textureData_.size(), DETECT, false, "store_icon");
+			if (!texture_)
+				textureFailed_ = true;
+			textureData_.clear();
+			download_.reset();
+		}
 	}
 
 	if (HasFocus()) {
@@ -152,9 +191,16 @@ void HttpImageFileView::Draw(UIContext &dc) {
 	}
 
 	// TODO: involve sizemode
-	if (texture_) {
-		float tw = texture_->Width();
-		float th = texture_->Height();
+	Draw::Texture *texture = nullptr;
+	if (useIconCache_) {
+		texture = g_iconCache.BindIconTexture(&dc, path_);
+	} else {
+		texture = texture_->GetTexture();
+	}
+
+	if (texture) {
+		float tw = texture->Width();
+		float th = texture->Height();
 
 		float x = bounds_.x;
 		float y = bounds_.y;
@@ -172,7 +218,7 @@ void HttpImageFileView::Draw(UIContext &dc) {
 		}
 
 		dc.Flush();
-		dc.GetDrawContext()->BindTexture(0, texture_->GetTexture());
+		dc.GetDrawContext()->BindTexture(0, texture);
 		dc.Draw()->Rect(x, y, w, h, color_);
 		dc.Flush();
 		dc.RebindTexture();
@@ -198,7 +244,7 @@ public:
 	StoreEntry GetEntry() const { return entry_; }
 
 private:
-	const StoreEntry &entry_;
+	const StoreEntry entry_;
 };
 
 // This is a "details" view of a game. Lets you install it.
@@ -238,13 +284,13 @@ void ProductView::CreateViews() {
 	Clear();
 
 	if (!entry_.iconURL.empty()) {
-		Add(new HttpImageFileView(&g_DownloadManager, ResolveUrl(storeBaseUrl, entry_.iconURL), IS_FIXED))->SetFixedSize(144, 88);
+		Add(new HttpImageFileView(&g_DownloadManager, ResolveUrl(StoreBaseUrl(), entry_.iconURL), IS_FIXED))->SetFixedSize(144, 88);
 	}
 	Add(new TextView(entry_.name));
 	Add(new TextView(entry_.author));
 
-	auto st = GetI18NCategory("Store");
-	auto di = GetI18NCategory("Dialog");
+	auto st = GetI18NCategory(I18NCat::STORE);
+	auto di = GetI18NCategory(I18NCat::DIALOG);
 	wasInstalled_ = IsGameInstalled();
 	bool isDownloading = g_GameManager.IsDownloading(DownloadURL());
 	if (!wasInstalled_) {
@@ -309,7 +355,7 @@ void ProductView::Update() {
 std::string ProductView::DownloadURL() {
 	if (entry_.downloadURL.empty()) {
 		// Construct the URL.
-		return storeBaseUrl + "files/" + entry_.file + ".zip";
+		return StoreBaseUrl() + "files/" + entry_.file + ".zip";
 	} else {
 		// Use the provided URL, for external hosting.
 		return entry_.downloadURL;
@@ -361,14 +407,12 @@ UI::EventReturn ProductView::OnLaunchClick(UI::EventParams &e) {
 }
 
 StoreScreen::StoreScreen() {
-	StoreFilter noFilter;
-	SetFilter(noFilter);
 	lang_ = g_Config.sLanguageIni;
 	loading_ = true;
 
-	std::string indexPath = storeBaseUrl + "index.json";
+	std::string indexPath = StoreBaseUrl() + "index.json";
 	const char *acceptMime = "application/json, */*; q=0.8";
-	listing_ = g_DownloadManager.StartDownload(indexPath, Path(), acceptMime);
+	listing_ = g_DownloadManager.StartDownload(indexPath, Path(), http::ProgressBarMode::DELAYED, acceptMime);
 }
 
 StoreScreen::~StoreScreen() {
@@ -403,19 +447,6 @@ void StoreScreen::update() {
 		// Forget the listing.
 		listing_.reset();
 	}
-
-	const char *storeName = "PPSSPP Homebrew Store";
-	switch (g_GameManager.GetState()) {
-	case GameManagerState::DOWNLOADING:
-		titleText_->SetText(std::string(storeName) + " - downloading");
-		break;
-	case GameManagerState::INSTALLING:
-		titleText_->SetText(std::string(storeName) + " - installing");
-		break;
-	default:
-		titleText_->SetText(storeName);
-		break;
-	}
 }
 
 void StoreScreen::ParseListing(std::string json) {
@@ -441,7 +472,7 @@ void StoreScreen::ParseListing(std::string json) {
 			e.size = game.getInt("size");
 			e.downloadURL = game.getString("download-url", "");
 			e.iconURL = game.getString("icon-url", "");
-			e.hidden = game.getBool("hidden", false);
+			e.hidden = false;  // NOTE: Handling of the "hidden" flag is broken in old versions of PPSSPP. Do not use.
 			const char *file = game.getString("file", nullptr);
 			if (!file)
 				continue;
@@ -456,13 +487,14 @@ void StoreScreen::CreateViews() {
 
 	root_ = new LinearLayout(ORIENT_VERTICAL);
 	
-	auto di = GetI18NCategory("Dialog");
-	auto st = GetI18NCategory("Store");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto st = GetI18NCategory(I18NCat::STORE);
+	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
 	// Top bar
 	LinearLayout *topBar = root_->Add(new LinearLayout(ORIENT_HORIZONTAL));
 	topBar->Add(new Button(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
-	titleText_ = new TextView("PPSSPP Homebrew Store");
+	titleText_ = new TextView(mm->T("PPSSPP Homebrew Store"));
 	topBar->Add(titleText_);
 	UI::Drawable solid(0xFFbd9939);
 	topBar->SetBG(solid);
@@ -471,7 +503,10 @@ void StoreScreen::CreateViews() {
 	if (connectionError_ || loading_) {
 		content = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f));
 		content->Add(new TextView(loading_ ? std::string(st->T("Loading...")) : StringFromFormat("%s: %d", st->T("Connection Error"), resultCode_)));
-		content->Add(new Button(di->T("Retry")))->OnClick.Handle(this, &StoreScreen::OnRetry);
+		if (!loading_) {
+			content->Add(new Button(di->T("Retry")))->OnClick.Handle(this, &StoreScreen::OnRetry);
+
+		}
 		content->Add(new Button(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
 
 		scrollItemView_ = nullptr;
@@ -484,8 +519,7 @@ void StoreScreen::CreateViews() {
 		scrollItemView_ = new LinearLayoutList(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT));
 		leftScroll->Add(scrollItemView_);
 
-		std::vector<StoreEntry> entries = FilterEntries();
-		for (size_t i = 0; i < entries.size(); i++) {
+		for (size_t i = 0; i < entries_.size(); i++) {
 			scrollItemView_->Add(new ProductItemView(entries_[i]))->OnClick.Handle(this, &StoreScreen::OnGameSelected);
 		}
 
@@ -502,20 +536,10 @@ void StoreScreen::CreateViews() {
 
 			selectedItem->Press();
 		} else {
-			lastSelectedName_ = "";
+			lastSelectedName_.clear();
 		}
 	}
 	root_->Add(content);
-}
-
-std::vector<StoreEntry> StoreScreen::FilterEntries() {
-	std::vector<StoreEntry> filtered;
-	for (size_t i = 0; i < entries_.size(); i++) {
-		// TODO: Actually filter by category etc.
-		if (!entries_[i].hidden)
-			filtered.push_back(entries_[i]);
-	}
-	return filtered;
 }
 
 ProductItemView *StoreScreen::GetSelectedItem() {
@@ -551,13 +575,8 @@ UI::EventReturn StoreScreen::OnGameLaunch(UI::EventParams &e) {
 	return UI::EVENT_DONE;
 }
 
-void StoreScreen::SetFilter(const StoreFilter &filter) {
-	filter_ = filter;
-	RecreateViews();
-}
-
 UI::EventReturn StoreScreen::OnRetry(UI::EventParams &e) {
-	SetFilter(filter_);
+	RecreateViews();
 	return UI::EVENT_DONE;
 }
 

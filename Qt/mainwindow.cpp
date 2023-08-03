@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QDesktopServices>
 #include <QDesktopWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 
@@ -26,7 +27,14 @@ MainWindow::MainWindow(QWidget *parent, bool fullscreen) :
 	nextState(CORE_POWERDOWN),
 	lastUIState(UISTATE_MENU)
 {
+#if defined(ASSETS_DIR)
+	if (QFile::exists(ASSETS_DIR "icon_regular_72.png"))
+		setWindowIcon(QIcon(ASSETS_DIR "icon_regular_72.png"));
+	else
+		setWindowIcon(QIcon(qApp->applicationDirPath() + "/assets/icon_regular_72.png"));
+#else
 	setWindowIcon(QIcon(qApp->applicationDirPath() + "/assets/icon_regular_72.png"));
+#endif
 
 	SetGameTitle("");
 	emugl = new MainUI(this);
@@ -89,11 +97,10 @@ void MainWindow::updateMenus()
 	updateMenuGroupInt(saveStateGroup, g_Config.iCurrentStateSlot);
 	updateMenuGroupInt(displayRotationGroup, g_Config.iInternalScreenRotation);
 	updateMenuGroupInt(renderingResolutionGroup, g_Config.iInternalResolution);
-	updateMenuGroupInt(renderingModeGroup, g_Config.iRenderingMode);
 	updateMenuGroupInt(frameSkippingGroup, g_Config.iFrameSkip);
 	updateMenuGroupInt(frameSkippingTypeGroup, g_Config.iFrameSkipType);
 	updateMenuGroupInt(textureFilteringGroup, g_Config.iTexFiltering);
-	updateMenuGroupInt(screenScalingFilterGroup, g_Config.iBufFilter);
+	updateMenuGroupInt(screenScalingFilterGroup, g_Config.iDisplayFilter);
 	updateMenuGroupInt(textureScalingLevelGroup, g_Config.iTexScalingLevel);
 	updateMenuGroupInt(textureScalingTypeGroup, g_Config.iTexScalingType);
 
@@ -123,7 +130,7 @@ void MainWindow::loadAct()
 	{
 		QFileInfo info(filename);
 		g_Config.currentDirectory = Path(info.absolutePath().toStdString());
-		NativeMessageReceived("boot", filename.toStdString().c_str());
+		System_PostUIMessage("boot", filename.toStdString().c_str());
 	}
 }
 
@@ -131,7 +138,7 @@ void MainWindow::closeAct()
 {
 	updateMenus();
 
-	NativeMessageReceived("stop", "");
+	System_PostUIMessage("stop", "");
 	SetGameTitle("");
 }
 
@@ -225,25 +232,25 @@ void MainWindow::exitAct()
 
 void MainWindow::runAct()
 {
-	NativeMessageReceived("run", "");
+	System_PostUIMessage("run", "");
 }
 
 void MainWindow::pauseAct()
 {
-	NativeMessageReceived("pause", "");
+	System_PostUIMessage("pause", "");
 }
 
 void MainWindow::stopAct()
 {
 	Core_Stop();
-	NativeMessageReceived("stop", "");
+	System_PostUIMessage("stop", "");
 }
 
 void MainWindow::resetAct()
 {
 	updateMenus();
 
-	NativeMessageReceived("reset", "");
+	System_PostUIMessage("reset", "");
 }
 
 void MainWindow::switchUMDAct()
@@ -368,7 +375,7 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 #endif
 
 		showFullScreen();
-		InitPadLayout(dp_xres, dp_yres);
+		InitPadLayout(g_display.dp_xres, g_display.dp_yres);
 
 		if (GetUIState() == UISTATE_INGAME && !g_Config.bShowTouchControls)
 			QApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
@@ -380,7 +387,7 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 
 		showNormal();
 		SetWindowScale(-1);
-		InitPadLayout(dp_xres, dp_yres);
+		InitPadLayout(g_display.dp_xres, g_display.dp_yres);
 
 		if (GetUIState() == UISTATE_INGAME && QApplication::overrideCursor())
 			QApplication::restoreOverrideCursor();
@@ -416,7 +423,7 @@ void MainWindow::forumAct()
 
 void MainWindow::goldAct()
 {
-	QDesktopServices::openUrl(QUrl("https://central.ppsspp.org/buygold"));
+	QDesktopServices::openUrl(QUrl("https://www.ppsspp.org/buygold"));
 }
 
 void MainWindow::gitAct()
@@ -580,8 +587,6 @@ void MainWindow::createMenus()
 		->addDisableState(UISTATE_MENU);
 	debugMenu->add(new MenuAction(this, SLOT(dumpNextAct()),  QT_TR_NOOP("D&ump next frame to log")))
 		->addDisableState(UISTATE_MENU);
-	debugMenu->add(new MenuAction(this, SLOT(statsAct()),   QT_TR_NOOP("Show debu&g statistics")))
-		->addEventChecked(&g_Config.bShowDebugStats);
 	debugMenu->addSeparator();
 	debugMenu->add(new MenuAction(this, SLOT(consoleAct()),   QT_TR_NOOP("&Log console"), Qt::CTRL + Qt::Key_L))
 		->addDisableState(UISTATE_MENU);
@@ -590,7 +595,7 @@ void MainWindow::createMenus()
 	MenuTree* gameSettingsMenu = new MenuTree(this, menuBar(), QT_TR_NOOP("&Game settings"));
 	gameSettingsMenu->add(new MenuAction(this, SLOT(languageAct()),        QT_TR_NOOP("La&nguage...")));
 	gameSettingsMenu->add(new MenuAction(this, SLOT(controlMappingAct()),        QT_TR_NOOP("C&ontrol mapping...")));
-	gameSettingsMenu->add(new MenuAction(this, SLOT(displayLayoutEditorAct()),        QT_TR_NOOP("Display layout editor...")));
+	gameSettingsMenu->add(new MenuAction(this, SLOT(displayLayoutEditorAct()),        QT_TR_NOOP("Display layout & effects...")));
 	gameSettingsMenu->add(new MenuAction(this, SLOT(moreSettingsAct()),        QT_TR_NOOP("&More settings...")));
 	gameSettingsMenu->addSeparator();
 #if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
@@ -599,6 +604,9 @@ void MainWindow::createMenus()
 	gameSettingsMenu->add(new MenuAction(this, SLOT(fullscrAct()), QT_TR_NOOP("Fu&llscreen"), QKeySequence::FullScreen))
 #endif
 		->addEventChecked(&g_Config.bFullScreen);
+	gameSettingsMenu->add(new MenuAction(this, SLOT(bufferRenderAct()), QT_TR_NOOP("&Skip buffer effects")))
+		->addEventChecked(&g_Config.bSkipBufferEffects);
+
 	MenuTree* renderingResolutionMenu = new MenuTree(this, gameSettingsMenu, QT_TR_NOOP("&Rendering resolution"));
 	renderingResolutionGroup = new MenuActionGroup(this, renderingResolutionMenu, SLOT(renderingResolutionGroup_triggered(QAction *)),
 		QStringList() << "&Auto" << "&1x" << "&2x" << "&3x" << "&4x" << "&5x" << "&6x" << "&7x" << "&8x" << "&9x" << "1&0x",
@@ -609,10 +617,6 @@ void MainWindow::createMenus()
 		QStringList() << "&1x" << "&2x" << "&3x" << "&4x" << "&5x" << "&6x" << "&7x" << "&8x" << "&9x" << "1&0x",
 		QList<int>() << 1 << 2 << 3 << 4 << 5 << 6 << 7 << 8 << 9 << 10);
 
-	MenuTree* renderingModeMenu = new MenuTree(this, gameSettingsMenu, QT_TR_NOOP("Rendering m&ode"));
-	renderingModeGroup = new MenuActionGroup(this, renderingModeMenu, SLOT(renderingModeGroup_triggered(QAction *)),
-		QStringList() << "&Skip buffered effects (non-buffered, faster)" << "&Buffered rendering",
-		QList<int>() << 0 << 1);
 	MenuTree* frameSkippingMenu = new MenuTree(this, gameSettingsMenu, QT_TR_NOOP("&Frame skipping"));
 	frameSkippingMenu->add(new MenuAction(this, SLOT(autoframeskipAct()),        QT_TR_NOOP("&Auto")))
 		->addEventChecked(&g_Config.bAutoFrameSkip);
@@ -649,8 +653,6 @@ void MainWindow::createMenus()
 		->addEventChecked(&g_Config.bHardwareTransform);
 	gameSettingsMenu->add(new MenuAction(this, SLOT(vertexCacheAct()),   QT_TR_NOOP("&Vertex cache")))
 		->addEventChecked(&g_Config.bVertexCache);
-	gameSettingsMenu->add(new MenuAction(this, SLOT(showFPSAct()), QT_TR_NOOP("&Show FPS counter")))
-		->addEventChecked(&g_Config.iShowFPSCounter);
 	gameSettingsMenu->addSeparator();
 	gameSettingsMenu->add(new MenuAction(this, SLOT(audioAct()),   QT_TR_NOOP("Enable s&ound")))
 		->addEventChecked(&g_Config.bEnableSound);

@@ -229,8 +229,6 @@ public:
 	// Temporary used around delay slots and similar.
 	u64 saved_flags;
 
-	GMRng rng;	// VFPU hardware random number generator. Probably not the right type.
-
 	// Debug stuff
 	u32 debugCount;	// can be used to count basic blocks before crashes, etc.
 
@@ -266,6 +264,12 @@ public:
 	void InvalidateICache(u32 address, int length = 4);
 
 	void ClearJitCache();
+
+	void ProcessPendingClears();
+
+	// Doesn't need save stating.
+	volatile bool insideJit = false;
+	volatile bool hasPendingClears = false;
 };
 
 

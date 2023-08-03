@@ -131,7 +131,8 @@ static int sceNpMatching2ContextStart(int ctxId)
 	//npMatching2Ctx.started = true;
 	Url url("http://static-resource.np.community.playstation.net/np/resource/psp-title/" + std::string(npTitleId.data) + "_00/matching/" + std::string(npTitleId.data) + "_00-matching.xml");
 	http::Client client;
-	http::RequestProgress progress;
+	bool cancelled = false;
+	net::RequestProgress progress(&cancelled);
 	if (!client.Resolve(url.Host().c_str(), url.Port())) {
 		return hleLogError(SCENET, SCE_NP_COMMUNITY_SERVER_ERROR_NO_SUCH_TITLE, "HTTP failed to resolve %s", url.Resource().c_str());
 	}
@@ -280,10 +281,12 @@ static int sceNpMatching2GetMemoryStat(u32 memStatPtr)
 	if (!npMatching2Inited)
 		return hleLogError(SCENET, SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED);
 
-	if (!Memory::IsValidAddress(memStatPtr))
+	auto memStat = PSPPointer<SceNpAuthMemoryStat>::Create(memStatPtr);
+	if (!memStat.IsValid())
 		return hleLogError(SCENET, SCE_NP_MATCHING2_ERROR_INVALID_ARGUMENT);
 
-	Memory::WriteStruct(memStatPtr, &npMatching2MemStat);
+	*memStat = npMatching2MemStat;
+	memStat.NotifyWrite("NpMatching2GetMemoryStat");
 
 	return 0;
 }

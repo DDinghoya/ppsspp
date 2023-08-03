@@ -113,58 +113,49 @@ private slots:
 	void consoleAct();
 
 	// Game settings
-	void languageAct() { NativeMessageReceived("language screen", ""); }
-	void controlMappingAct() { NativeMessageReceived("control mapping", ""); }
-	void displayLayoutEditorAct() { NativeMessageReceived("display layout editor", ""); }
-	void moreSettingsAct() { NativeMessageReceived("settings", ""); }
+	void languageAct() { System_PostUIMessage("language screen", ""); }
+	void controlMappingAct() { System_PostUIMessage("control mapping", ""); }
+	void displayLayoutEditorAct() { System_PostUIMessage("display layout editor", ""); }
+	void moreSettingsAct() { System_PostUIMessage("settings", ""); }
 
 	void bufferRenderAct() {
-		g_Config.iRenderingMode = !g_Config.iRenderingMode;
-		NativeMessageReceived("gpu_resized", "");
+		System_PostUIMessage("gpu_renderResized", "");
+		System_PostUIMessage("gpu_configChanged", "");
 	}
 	void linearAct() { g_Config.iTexFiltering = (g_Config.iTexFiltering != 0) ? 0 : 3; }
 
 	void renderingResolutionGroup_triggered(QAction *action) {
 		g_Config.iInternalResolution = action->data().toInt();
-		NativeMessageReceived("gpu_resized", "");
+		System_PostUIMessage("gpu_renderResized", "");
 	}
 	void windowGroup_triggered(QAction *action) { SetWindowScale(action->data().toInt()); }
 
-	void displayLayoutGroup_triggered(QAction *action) {
-		g_Config.iSmallDisplayZoomType = action->data().toInt();
-		NativeMessageReceived("gpu_resized", "");
-	}
-	void renderingModeGroup_triggered(QAction *action) {
-		g_Config.iRenderingMode = action->data().toInt();
-		g_Config.bAutoFrameSkip = false;
-		NativeMessageReceived("gpu_resized", "");
-	}
 	void autoframeskipAct() {
 		g_Config.bAutoFrameSkip = !g_Config.bAutoFrameSkip;
-		if (g_Config.iRenderingMode == FB_NON_BUFFERED_MODE) {
-			g_Config.iRenderingMode = FB_BUFFERED_MODE;
-			NativeMessageReceived("gpu_resized", "");
+		if (g_Config.bSkipBufferEffects) {
+			g_Config.bSkipBufferEffects = false;
+			System_PostUIMessage("gpu_configChanged", "");
 		}
 	}
 	void frameSkippingGroup_triggered(QAction *action) { g_Config.iFrameSkip = action->data().toInt(); }
 	void frameSkippingTypeGroup_triggered(QAction *action) { g_Config.iFrameSkipType = action->data().toInt(); }
 	void textureFilteringGroup_triggered(QAction *action) { g_Config.iTexFiltering = action->data().toInt(); }
-	void screenScalingFilterGroup_triggered(QAction *action) { g_Config.iBufFilter = action->data().toInt(); }
+	void screenScalingFilterGroup_triggered(QAction *action) { g_Config.iDisplayFilter = action->data().toInt(); }
 	void textureScalingLevelGroup_triggered(QAction *action) {
 		g_Config.iTexScalingLevel = action->data().toInt();
-		NativeMessageReceived("gpu_clearCache", "");
+		System_PostUIMessage("gpu_configChanged", "");
 	}
 	void textureScalingTypeGroup_triggered(QAction *action) {
 		g_Config.iTexScalingType = action->data().toInt();
-		NativeMessageReceived("gpu_clearCache", "");
+		System_PostUIMessage("gpu_configChanged", "");
 	}
 	void deposterizeAct() {
 		g_Config.bTexDeposterize = !g_Config.bTexDeposterize;
-		NativeMessageReceived("gpu_clearCache", "");
+		System_PostUIMessage("gpu_configChanged", "");
 	}
 	void transformAct() {
 		g_Config.bHardwareTransform = !g_Config.bHardwareTransform;
-		NativeMessageReceived("gpu_resized", "");
+		System_PostUIMessage("gpu_configChanged", "");
 	}
 	void vertexCacheAct() { g_Config.bVertexCache = !g_Config.bVertexCache; }
 	void frameskipAct() { g_Config.iFrameSkip = !g_Config.iFrameSkip; }
@@ -173,8 +164,6 @@ private slots:
 	// Sound
 	void audioAct() {
 		g_Config.bEnableSound = !g_Config.bEnableSound;
-		if (PSP_IsInited() && !IsAudioInitialised())
-			Audio_Init();
 	}
 
 	// Cheats
@@ -183,17 +172,12 @@ private slots:
 	// Chat
 	void chatAct() {
 		if (GetUIState() == UISTATE_INGAME) {
-			NativeMessageReceived("chat screen", "");
+			System_PostUIMessage("chat screen", "");
 		}
 	}
 
 	void fullscrAct();
 	void raiseTopMost();
-	void statsAct() {
-		g_Config.bShowDebugStats = !g_Config.bShowDebugStats;
-		NativeMessageReceived("clear jit", "");
-	}
-	void showFPSAct() { g_Config.iShowFPSCounter = g_Config.iShowFPSCounter ? 0 : 3; } // 3 = both speed and FPS
 
 	// Help
 	void websiteAct();
@@ -224,7 +208,7 @@ private:
 	             *textureScalingLevelGroup, *textureScalingTypeGroup,
 	             *screenScalingFilterGroup, *textureFilteringGroup,
 	             *frameSkippingTypeGroup, *frameSkippingGroup,
-	             *renderingModeGroup, *renderingResolutionGroup,
+	             *renderingResolutionGroup,
 	             *displayRotationGroup, *saveStateGroup;
 
 	std::queue<MainWindowMsg> msgQueue_;

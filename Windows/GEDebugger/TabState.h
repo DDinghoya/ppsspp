@@ -47,6 +47,7 @@ protected:
 private:
 	bool RowValuesChanged(int row);
 	void SetCmdValue(u32 op);
+	void PromptBreakpointCond(const TabStateRow &info);
 
 	const TabStateRow *rows_;
 	int rowCount_;
@@ -62,7 +63,7 @@ public:
 	}
 
 protected:
-	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam) override;
 
 	CtrlStateValues *values;
 

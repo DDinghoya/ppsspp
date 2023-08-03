@@ -37,7 +37,8 @@ public:
 
 	bool Mark(uint32_t addr, uint32_t size, uint64_t ticks, uint32_t pc, bool allocated, const char *tag);
 	bool Find(MemBlockFlags flags, uint32_t addr, uint32_t size, std::vector<MemBlockInfo> &results);
-	bool FastFindWriteTag(MemBlockFlags flags, uint32_t addr, uint32_t size, std::string &result);
+	// Note that the returned pointer gets invalidated as soon as Mark is called.
+	const char *FastFindWriteTag(MemBlockFlags flags, uint32_t addr, uint32_t size);
 	void Reset();
 	void DoState(PointerWrap &p);
 
@@ -151,17 +152,16 @@ bool MemSlabMap::Find(MemBlockFlags flags, uint32_t addr, uint32_t size, std::ve
 	return found;
 }
 
-bool MemSlabMap::FastFindWriteTag(MemBlockFlags flags, uint32_t addr, uint32_t size, std::string &result) {
+const char *MemSlabMap::FastFindWriteTag(MemBlockFlags flags, uint32_t addr, uint32_t size) {
 	uint32_t end = addr + size;
 	Slab *slab = FindSlab(addr);
 	while (slab != nullptr && slab->start < end) {
 		if (slab->pc != 0 || slab->tag[0] != '\0') {
-			result = slab->tag;
-			return true;
+			return slab->tag;
 		}
 		slab = slab->next;
 	}
-	return false;
+	return nullptr;
 }
 
 void MemSlabMap::Reset() {
@@ -399,12 +399,44 @@ void FlushPendingMemInfo() {
 	pendingNotifyMaxAddr2 = 0;
 }
 
+static inline uint32_t NormalizeAddress(uint32_t addr) {
+	if ((addr & 0x3F000000) == 0x04000000)
+		return addr & 0x041FFFFF;
+	return addr & 0x3FFFFFFF;
+}
+
+static inline bool MergeRecentMemInfo(const PendingNotifyMem &info, size_t copyLength) {
+	if (pendingNotifies.size() < 4)
+		return false;
+
+	for (size_t i = 1; i <= 4; ++i) {
+		auto &prev = pendingNotifies[pendingNotifies.size() - i];
+		if (prev.flags != info.flags)
+			continue;
+
+		if (prev.start >= info.start + info.size || prev.start + prev.size <= info.start)
+			continue;
+
+		// This means there's overlap, but not a match, so we can't combine any.
+		if (prev.start != info.start || prev.size > info.size)
+			return false;
+
+		memcpy(prev.tag, info.tag, copyLength + 1);
+		prev.size = info.size;
+		prev.ticks = info.ticks;
+		prev.pc = info.pc;
+		return true;
+	}
+
+	return false;
+}
+
 void NotifyMemInfoPC(MemBlockFlags flags, uint32_t start, uint32_t size, uint32_t pc, const char *tagStr, size_t strLength) {
 	if (size == 0) {
 		return;
 	}
 	// Clear the uncached and kernel bits.
-	start &= ~0xC0000000;
+	start = NormalizeAddress(start);
 
 	bool needFlush = false;
 	// When the setting is off, we skip smaller info to keep things fast.
@@ -421,14 +453,17 @@ void NotifyMemInfoPC(MemBlockFlags flags, uint32_t start, uint32_t size, uint32_
 		info.tag[copyLength] = 0;
 
 		std::lock_guard<std::mutex> guard(pendingMutex);
-		if (start < 0x08000000) {
-			pendingNotifyMinAddr1 = std::min(pendingNotifyMinAddr1.load(), start);
-			pendingNotifyMaxAddr1 = std::max(pendingNotifyMaxAddr1.load(), start + size);
-		} else {
-			pendingNotifyMinAddr2 = std::min(pendingNotifyMinAddr2.load(), start);
-			pendingNotifyMaxAddr2 = std::max(pendingNotifyMaxAddr2.load(), start + size);
+		// Sometimes we get duplicates, quickly check.
+		if (!MergeRecentMemInfo(info, copyLength)) {
+			if (start < 0x08000000) {
+				pendingNotifyMinAddr1 = std::min(pendingNotifyMinAddr1.load(), start);
+				pendingNotifyMaxAddr1 = std::max(pendingNotifyMaxAddr1.load(), start + size);
+			} else {
+				pendingNotifyMinAddr2 = std::min(pendingNotifyMinAddr2.load(), start);
+				pendingNotifyMaxAddr2 = std::max(pendingNotifyMaxAddr2.load(), start + size);
+			}
+			pendingNotifies.push_back(info);
 		}
-		pendingNotifies.push_back(info);
 		needFlush = pendingNotifies.size() > MAX_PENDING_NOTIFIES;
 	}
 
@@ -450,7 +485,7 @@ void NotifyMemInfo(MemBlockFlags flags, uint32_t start, uint32_t size, const cha
 }
 
 std::vector<MemBlockInfo> FindMemInfo(uint32_t start, uint32_t size) {
-	start &= ~0xC0000000;
+	start = NormalizeAddress(start);
 
 	if (pendingNotifyMinAddr1 < start + size && pendingNotifyMaxAddr1 >= start)
 		FlushPendingMemInfo();
@@ -466,7 +501,7 @@ std::vector<MemBlockInfo> FindMemInfo(uint32_t start, uint32_t size) {
 }
 
 std::vector<MemBlockInfo> FindMemInfoByFlag(MemBlockFlags flags, uint32_t start, uint32_t size) {
-	start &= ~0xC0000000;
+	start = NormalizeAddress(start);
 
 	if (pendingNotifyMinAddr1 < start + size && pendingNotifyMaxAddr1 >= start)
 		FlushPendingMemInfo();
@@ -485,45 +520,48 @@ std::vector<MemBlockInfo> FindMemInfoByFlag(MemBlockFlags flags, uint32_t start,
 	return results;
 }
 
-static std::string FindWriteTagByFlag(MemBlockFlags flags, uint32_t start, uint32_t size) {
-	start &= ~0xC0000000;
+static const char *FindWriteTagByFlag(MemBlockFlags flags, uint32_t start, uint32_t size) {
+	start = NormalizeAddress(start);
 
 	if (pendingNotifyMinAddr1 < start + size && pendingNotifyMaxAddr1 >= start)
 		FlushPendingMemInfo();
 	if (pendingNotifyMinAddr2 < start + size && pendingNotifyMaxAddr2 >= start)
 		FlushPendingMemInfo();
 
-	std::string tag;
 	if (flags & MemBlockFlags::ALLOC) {
-		if (allocMap.FastFindWriteTag(MemBlockFlags::ALLOC, start, size, tag))
+		const char *tag = allocMap.FastFindWriteTag(MemBlockFlags::ALLOC, start, size);
+		if (tag)
 			return tag;
 	}
 	if (flags & MemBlockFlags::SUB_ALLOC) {
-		if (suballocMap.FastFindWriteTag(MemBlockFlags::SUB_ALLOC, start, size, tag))
+		const char *tag = suballocMap.FastFindWriteTag(MemBlockFlags::SUB_ALLOC, start, size);
+		if (tag)
 			return tag;
 	}
 	if (flags & MemBlockFlags::WRITE) {
-		if (writeMap.FastFindWriteTag(MemBlockFlags::WRITE, start, size, tag))
+		const char *tag = writeMap.FastFindWriteTag(MemBlockFlags::WRITE, start, size);
+		if (tag)
 			return tag;
 	}
 	if (flags & MemBlockFlags::TEXTURE) {
-		if (textureMap.FastFindWriteTag(MemBlockFlags::TEXTURE, start, size, tag))
+		const char *tag = textureMap.FastFindWriteTag(MemBlockFlags::TEXTURE, start, size);
+		if (tag)
 			return tag;
 	}
-	return "";
+	return nullptr;
 }
 
-std::string GetMemWriteTagAt(uint32_t start, uint32_t size) {
-	std::string tag = FindWriteTagByFlag(MemBlockFlags::WRITE, start, size);
-	if (!tag.empty() && tag != "MemInit")
-		return tag;
-
+size_t FormatMemWriteTagAt(char *buf, size_t sz, const char *prefix, uint32_t start, uint32_t size) {
+	const char *tag = FindWriteTagByFlag(MemBlockFlags::WRITE, start, size);
+	if (tag && strcmp(tag, "MemInit") != 0) {
+		return snprintf(buf, sz, "%s%s", prefix, tag);
+	}
 	// Fall back to alloc and texture, especially for VRAM.  We prefer write above.
 	tag = FindWriteTagByFlag(MemBlockFlags::ALLOC | MemBlockFlags::TEXTURE, start, size);
-	if (!tag.empty())
-		return tag;
-
-	return StringFromFormat("%08x_size_%08x", start, size);
+	if (tag) {
+		return snprintf(buf, sz, "%s%s", prefix, tag);
+	}
+	return snprintf(buf, sz, "%s%08x_size_%08x", prefix, start, size);
 }
 
 void MemBlockInfoInit() {

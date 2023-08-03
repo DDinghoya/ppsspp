@@ -4,10 +4,13 @@
 #include <mutex>
 #include <condition_variable>
 
-
+#include "Common/Thread/Promise.h"
 #include "Common/Data/Collections/Hashmaps.h"
+#include "Common/Data/Collections/FastVec.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/GPU/Vulkan/VulkanBarrier.h"
+#include "Common/GPU/Vulkan/VulkanFrameData.h"
+#include "Common/GPU/Vulkan/VulkanFramebuffer.h"
 #include "Common/Data/Convert/SmallDataConvert.h"
 #include "Common/Data/Collections/TinySet.h"
 #include "Common/GPU/DataFormat.h"
@@ -16,17 +19,16 @@ class VKRFramebuffer;
 struct VKRGraphicsPipeline;
 struct VKRComputePipeline;
 struct VKRImage;
+struct FrameData;
 
 enum {
 	QUEUE_HACK_MGS2_ACID = 1,
 	QUEUE_HACK_SONIC = 2,
-	// Killzone PR = 4.
 	QUEUE_HACK_RENDERPASS_MERGE = 8,
 };
 
 enum class VKRRenderCommand : uint8_t {
 	REMOVED,
-	BIND_PIPELINE,  // raw pipeline
 	BIND_GRAPHICS_PIPELINE,  // async
 	BIND_COMPUTE_PIPELINE,  // async
 	STENCIL,
@@ -37,30 +39,36 @@ enum class VKRRenderCommand : uint8_t {
 	DRAW,
 	DRAW_INDEXED,
 	PUSH_CONSTANTS,
+	DEBUG_ANNOTATION,
 	NUM_RENDER_COMMANDS,
 };
 
-enum PipelineFlags {
-	PIPELINE_FLAG_NONE = 0,
-	PIPELINE_FLAG_USES_LINES = (1 << 2),
-	PIPELINE_FLAG_USES_BLEND_CONSTANT = (1 << 3),
-	PIPELINE_FLAG_USES_DEPTH_STENCIL = (1 << 4),  // Reads or writes the depth buffer.
+enum class PipelineFlags : u8 {
+	NONE = 0,
+	USES_BLEND_CONSTANT = (1 << 1),
+	USES_DEPTH_STENCIL = (1 << 2),  // Reads or writes the depth or stencil buffers.
+	USES_GEOMETRY_SHADER = (1 << 3),
+	USES_MULTIVIEW = (1 << 4),  // Inherited from the render pass it was created with.
+	USES_DISCARD = (1 << 5),
 };
+ENUM_CLASS_BITOPS(PipelineFlags);
 
 struct VkRenderData {
 	VKRRenderCommand cmd;
 	union {
 		struct {
 			VkPipeline pipeline;
+			VkPipelineLayout pipelineLayout;
 		} pipeline;
 		struct {
 			VKRGraphicsPipeline *pipeline;
+			VkPipelineLayout pipelineLayout;
 		} graphics_pipeline;
 		struct {
 			VKRComputePipeline *pipeline;
+			VkPipelineLayout pipelineLayout;
 		} compute_pipeline;
 		struct {
-			VkPipelineLayout pipelineLayout;
 			VkDescriptorSet ds;
 			int numUboOffsets;
 			uint32_t uboOffsets[3];
@@ -70,17 +78,15 @@ struct VkRenderData {
 			uint32_t offset;
 		} draw;
 		struct {
-			VkPipelineLayout pipelineLayout;
 			VkDescriptorSet ds;
-			int numUboOffsets;
 			uint32_t uboOffsets[3];
-			VkBuffer vbuffer;  // might need to increase at some point
-			VkDeviceSize voffset;
+			uint16_t numUboOffsets;
+			uint16_t instances;
+			VkBuffer vbuffer;
 			VkBuffer ibuffer;
-			VkDeviceSize ioffset;
+			uint32_t voffset;
+			uint32_t ioffset;
 			uint32_t count;
-			int16_t instances;
-			VkIndexType indexType;
 		} drawIndexed;
 		struct {
 			uint32_t clearColor;
@@ -103,12 +109,19 @@ struct VkRenderData {
 			uint32_t color;
 		} blendColor;
 		struct {
-			VkPipelineLayout pipelineLayout;
 			VkShaderStageFlags stages;
 			uint8_t offset;
 			uint8_t size;
 			uint8_t data[40];  // Should be enough for now.
 		} push;
+		struct {
+			const char *annotation;
+		} debugAnnotation;
+		struct {
+			int setNumber;
+			VkDescriptorSet set;
+			VkPipelineLayout pipelineLayout;
+		} bindDescSet;
 	};
 };
 
@@ -121,33 +134,25 @@ enum class VKRStepType : uint8_t {
 	READBACK_IMAGE,
 };
 
-enum class VKRRenderPassLoadAction : uint8_t {
-	DONT_CARE,
-	CLEAR,
-	KEEP,
-};
-
 struct TransitionRequest {
-	VkImageAspectFlags aspect;  // COLOR or DEPTH
 	VKRFramebuffer *fb;
+	VkImageAspectFlags aspect;  // COLOR or DEPTH
 	VkImageLayout targetLayout;
+
+	bool operator == (const TransitionRequest &other) const {
+		return fb == other.fb && aspect == other.aspect && targetLayout == other.targetLayout;
+	}
 };
 
-struct QueueProfileContext {
-	VkQueryPool queryPool;
-	std::vector<std::string> timestampDescriptions;
-	std::string profileSummary;
-	double cpuStartTime;
-	double cpuEndTime;
-};
+class VKRRenderPass;
 
 struct VKRStep {
 	VKRStep(VKRStepType _type) : stepType(_type) {}
 	~VKRStep() {}
 
 	VKRStepType stepType;
-	std::vector<VkRenderData> commands;
-	std::vector<TransitionRequest> preTransitions;
+	FastVec<VkRenderData> commands;
+	TinySet<TransitionRequest, 4> preTransitions;
 	TinySet<VKRFramebuffer *, 8> dependencies;
 	const char *tag;
 	union {
@@ -156,6 +161,9 @@ struct VKRStep {
 			VKRRenderPassLoadAction colorLoad;
 			VKRRenderPassLoadAction depthLoad;
 			VKRRenderPassLoadAction stencilLoad;
+			VKRRenderPassStoreAction colorStore;
+			VKRRenderPassStoreAction depthStore;
+			VKRRenderPassStoreAction stencilStore;
 			u8 clearStencil;
 			uint32_t clearColor;
 			float clearDepth;
@@ -164,8 +172,11 @@ struct VKRStep {
 			int numReads;
 			VkImageLayout finalColorLayout;
 			VkImageLayout finalDepthStencilLayout;
-			u32 pipelineFlags;
+			PipelineFlags pipelineFlags;  // contains the self dependency flag, in the form of USES_INPUT_ATTACHMENT
 			VkRect2D renderArea;
+			// Render pass type. Deduced after finishing recording the pass, from the used pipelines.
+			// NOTE: Storing the render pass here doesn't do much good, we change the compatible parameters (load/store ops) during step optimization.
+			RenderPassType renderPassType;
 		} render;
 		struct {
 			VKRFramebuffer *src;
@@ -186,6 +197,7 @@ struct VKRStep {
 			int aspectMask;
 			VKRFramebuffer *src;
 			VkRect2D srcRect;
+			bool delayed;
 		} readback;
 		struct {
 			VkImage image;
@@ -195,16 +207,30 @@ struct VKRStep {
 	};
 };
 
+// These are enqueued from the main thread,
+// and the render thread pops them off
+struct VKRRenderThreadTask {
+	VKRRenderThreadTask(VKRRunType _runType) : runType(_runType) {}
+	std::vector<VKRStep *> steps;
+	int frame = -1;
+	VKRRunType runType;
+
+	// Avoid copying these by accident.
+	VKRRenderThreadTask(VKRRenderThreadTask &) = delete;
+	VKRRenderThreadTask &operator =(VKRRenderThreadTask &) = delete;
+};
+
 class VulkanQueueRunner {
 public:
 	VulkanQueueRunner(VulkanContext *vulkan) : vulkan_(vulkan), renderPasses_(16) {}
+
 	void SetBackbuffer(VkFramebuffer fb, VkImage img) {
 		backbuffer_ = fb;
 		backbufferImage_ = img;
 	}
 
 	void PreprocessSteps(std::vector<VKRStep *> &steps);
-	void RunSteps(VkCommandBuffer cmd, std::vector<VKRStep *> &steps, QueueProfileContext *profile);
+	void RunSteps(std::vector<VKRStep *> &steps, FrameData &frameData, FrameDataShared &frameDataShared, bool keepSteps = false);
 	void LogSteps(const std::vector<VKRStep *> &steps, bool verbose);
 
 	std::string StepToString(const VKRStep &step) const;
@@ -212,40 +238,32 @@ public:
 	void CreateDeviceObjects();
 	void DestroyDeviceObjects();
 
-	VkRenderPass GetBackbufferRenderPass() const {
-		return backbufferRenderPass_;
+	// Swapchain
+	void DestroyBackBuffers();
+	bool CreateSwapchain(VkCommandBuffer cmdInit);
+
+	bool HasBackbuffers() const {
+		return !framebuffers_.empty();
 	}
 
 	// Get a render pass that's compatible with all our framebuffers.
 	// Note that it's precached, cannot look up in the map as this might be on another thread.
-	VkRenderPass GetFramebufferRenderPass() const {
-		return framebufferRenderPass_;
+	VKRRenderPass *GetCompatibleRenderPass() const {
+		return compatibleRenderPass_;
 	}
 
 	inline int RPIndex(VKRRenderPassLoadAction color, VKRRenderPassLoadAction depth) {
 		return (int)depth * 3 + (int)color;
 	}
 
-	void CopyReadbackBuffer(int width, int height, Draw::DataFormat srcFormat, Draw::DataFormat destFormat, int pixelStride, uint8_t *pixels);
+	// src == 0 means to copy from the sync readback buffer.
+	bool CopyReadbackBuffer(FrameData &frameData, VKRFramebuffer *src, int width, int height, Draw::DataFormat srcFormat, Draw::DataFormat destFormat, int pixelStride, uint8_t *pixels);
 
-	struct RPKey {
-		VKRRenderPassLoadAction colorLoadAction;
-		VKRRenderPassLoadAction depthLoadAction;
-		VKRRenderPassLoadAction stencilLoadAction;
-	};
+	VKRRenderPass *GetRenderPass(const RPKey &key);
 
-	// Only call this from the render thread! Also ok during initialization (LoadCache).
-	VkRenderPass GetRenderPass(
-		VKRRenderPassLoadAction colorLoadAction, VKRRenderPassLoadAction depthLoadAction, VKRRenderPassLoadAction stencilLoadAction) {
-		RPKey key{ colorLoadAction, depthLoadAction, stencilLoadAction };
-		return GetRenderPass(key);
-	}
-
-	VkRenderPass GetRenderPass(const RPKey &key);
-
-	bool GetRenderPassKey(VkRenderPass passToFind, RPKey *outKey) const {
+	bool GetRenderPassKey(VKRRenderPass *passToFind, RPKey *outKey) const {
 		bool found = false;
-		renderPasses_.Iterate([passToFind, &found, outKey](const RPKey &rpkey, VkRenderPass pass) {
+		renderPasses_.Iterate([passToFind, &found, outKey](const RPKey &rpkey, const VKRRenderPass *pass) {
 			if (pass == passToFind) {
 				found = true;
 				*outKey = rpkey;
@@ -268,13 +286,14 @@ public:
 	}
 
 private:
-	void InitBackbufferRenderPass();
+	bool InitBackbufferFramebuffers(int width, int height);
+	bool InitDepthStencilBuffer(VkCommandBuffer cmd);  // Used for non-buffered rendering.
 
-	void PerformBindFramebufferAsRenderTarget(const VKRStep &pass, VkCommandBuffer cmd);
+	VKRRenderPass *PerformBindFramebufferAsRenderTarget(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformRenderPass(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformCopy(const VKRStep &pass, VkCommandBuffer cmd);
 	void PerformBlit(const VKRStep &pass, VkCommandBuffer cmd);
-	void PerformReadback(const VKRStep &pass, VkCommandBuffer cmd);
+	void PerformReadback(const VKRStep &pass, VkCommandBuffer cmd, FrameData &frameData);
 	void PerformReadbackImage(const VKRStep &pass, VkCommandBuffer cmd);
 
 	void LogRenderPass(const VKRStep &pass, bool verbose);
@@ -283,7 +302,7 @@ private:
 	void LogReadback(const VKRStep &pass);
 	void LogReadbackImage(const VKRStep &pass);
 
-	void ResizeReadbackBuffer(VkDeviceSize requiredSize);
+	void ResizeReadbackBuffer(CachedReadback *readback, VkDeviceSize requiredSize);
 
 	void ApplyMGSHack(std::vector<VKRStep *> &steps);
 	void ApplySonicHack(std::vector<VKRStep *> &steps);
@@ -291,27 +310,23 @@ private:
 
 	static void SetupTransitionToTransferSrc(VKRImage &img, VkImageAspectFlags aspect, VulkanBarrier *recordBarrier);
 	static void SetupTransitionToTransferDst(VKRImage &img, VkImageAspectFlags aspect, VulkanBarrier *recordBarrier);
+	static void SetupTransferDstWriteAfterWrite(VKRImage &img, VkImageAspectFlags aspect, VulkanBarrier *recordBarrier);
 
 	VulkanContext *vulkan_;
 
 	VkFramebuffer backbuffer_ = VK_NULL_HANDLE;
 	VkImage backbufferImage_ = VK_NULL_HANDLE;
 
-	VkRenderPass backbufferRenderPass_ = VK_NULL_HANDLE;
-
-	// The "Compatible" render pass. Used when creating pipelines that render to "normal" framebuffers.
-	VkRenderPass framebufferRenderPass_ = VK_NULL_HANDLE;
+	// The "Compatible" render pass. Should be able to get rid of this soon.
+	VKRRenderPass *compatibleRenderPass_ = nullptr;
 
 	// Renderpasses, all combinations of preserving or clearing or dont-care-ing fb contents.
-	// TODO: Create these on demand.
-	DenseHashMap<RPKey, VkRenderPass, (VkRenderPass)VK_NULL_HANDLE> renderPasses_;
+	// Each VKRRenderPass contains all compatibility classes (which attachments they have, etc).
+	DenseHashMap<RPKey, VKRRenderPass *, nullptr> renderPasses_;
 
 	// Readback buffer. Currently we only support synchronous readback, so we only really need one.
 	// We size it generously.
-	VkDeviceMemory readbackMemory_ = VK_NULL_HANDLE;
-	VkBuffer readbackBuffer_ = VK_NULL_HANDLE;
-	VkDeviceSize readbackBufferSize_ = 0;
-	bool readbackBufferIsCoherent_ = false;
+	CachedReadback syncReadback_{};
 
 	// TODO: Enable based on compat.ini.
 	uint32_t hacksEnabled_ = 0;
@@ -324,4 +339,20 @@ private:
 	// Stored here to help reuse the allocation.
 
 	VulkanBarrier recordBarrier_;
+
+	// Swap chain management
+	struct SwapchainImageData {
+		VkImage image;
+		VkImageView view;
+	};
+	std::vector<VkFramebuffer> framebuffers_;
+	std::vector<SwapchainImageData> swapchainImages_;
+	uint32_t swapchainImageCount_ = 0;
+	struct DepthBufferInfo {
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkImage image = VK_NULL_HANDLE;
+		VmaAllocation alloc = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+	};
+	DepthBufferInfo depth_;
 };

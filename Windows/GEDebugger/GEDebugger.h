@@ -81,7 +81,7 @@ public:
 	StepCountDlg(HINSTANCE _hInstance, HWND _hParent);
 	~StepCountDlg();
 protected:
-	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam) override;
 private:
 	void Jump(int count, bool relative);
 };
@@ -94,7 +94,7 @@ public:
 	static void Init();
 
 protected:
-	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam) override;
 
 private:
 	void SetupPreviews();
@@ -113,6 +113,7 @@ private:
 	void PrimaryPreviewHover(int x, int y);
 	void SecondPreviewHover(int x, int y);
 	void PreviewExport(const GPUDebugBuffer *buffer);
+	void PreviewToClipboard(const GPUDebugBuffer *buffer, bool saveAlpha);
 	static void DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y, char desc[256]);
 	static void DescribePixelRGBA(u32 pix, GPUDebugBufferFormat fmt, int x, int y, char desc[256]);
 	void UpdateMenus();
@@ -134,10 +135,17 @@ private:
 	int textureLevel_ = 0;
 	bool showClut_ = false;
 	bool forceOpaque_ = false;
-	bool autoFlush_ = false;
+	bool autoFlush_ = true;
 	// The most recent primary/framebuffer and texture buffers.
 	const GPUDebugBuffer *primaryBuffer_ = nullptr;
 	const GPUDebugBuffer *secondBuffer_ = nullptr;
+	bool primaryIsFramebuffer_ = false;
+	bool secondIsFramebuffer_ = false;
+
+	uint32_t primaryTrackX_ = 0xFFFFFFFF;
+	uint32_t primaryTrackY_ = 0xFFFFFFFF;
+	uint32_t secondTrackX_ = 0xFFFFFFFF;
+	uint32_t secondTrackY_ = 0xFFFFFFFF;
 
 	bool updating_ = false;
 	int previewsEnabled_ = 3;

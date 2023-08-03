@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include <windowsx.h>
+#include "Common/CommonWindows.h"
 #include <commctrl.h>
 
 #include "Common/Data/Convert/ColorConv.h"
@@ -281,15 +281,30 @@ void CGEDebugger::SetupPreviews() {
 		primaryWindow->SetHoverCallback([&] (int x, int y) {
 			PrimaryPreviewHover(x, y);
 		});
-		primaryWindow->SetRightClickMenu(ContextMenuID::GEDBG_PREVIEW, [&] (int cmd) {
+		primaryWindow->SetRightClickMenu(ContextMenuID::GEDBG_PREVIEW, [&] (int cmd, int x, int y) {
 			HMENU subMenu = GetContextMenu(ContextMenuID::GEDBG_PREVIEW);
 			switch (cmd) {
 			case 0:
 				// Setup.
 				CheckMenuItem(subMenu, ID_GEDBG_ENABLE_PREVIEW, MF_BYCOMMAND | ((previewsEnabled_ & 1) ? MF_CHECKED : MF_UNCHECKED));
+				EnableMenuItem(subMenu, ID_GEDBG_TRACK_PIXEL_STOP, primaryTrackX_ == 0xFFFFFFFF ? MF_GRAYED : MF_ENABLED);
 				break;
 			case ID_GEDBG_EXPORT_IMAGE:
 				PreviewExport(primaryBuffer_);
+				break;
+			case ID_GEDBG_COPY_IMAGE:
+				PreviewToClipboard(primaryBuffer_, false);
+				break;
+			case ID_GEDBG_COPY_IMAGE_ALPHA:
+				PreviewToClipboard(primaryBuffer_, true);
+				break;
+			case ID_GEDBG_TRACK_PIXEL:
+				primaryTrackX_ = x;
+				primaryTrackY_ = y;
+				break;
+			case ID_GEDBG_TRACK_PIXEL_STOP:
+				primaryTrackX_ = 0xFFFFFFFF;
+				primaryTrackX_ = 0xFFFFFFFF;
 				break;
 			case ID_GEDBG_ENABLE_PREVIEW:
 				previewsEnabled_ ^= 1;
@@ -311,15 +326,30 @@ void CGEDebugger::SetupPreviews() {
 		secondWindow->SetHoverCallback([&] (int x, int y) {
 			SecondPreviewHover(x, y);
 		});
-		secondWindow->SetRightClickMenu(ContextMenuID::GEDBG_PREVIEW, [&] (int cmd) {
+		secondWindow->SetRightClickMenu(ContextMenuID::GEDBG_PREVIEW, [&] (int cmd, int x, int y) {
 			HMENU subMenu = GetContextMenu(ContextMenuID::GEDBG_PREVIEW);
 			switch (cmd) {
 			case 0:
 				// Setup.
 				CheckMenuItem(subMenu, ID_GEDBG_ENABLE_PREVIEW, MF_BYCOMMAND | ((previewsEnabled_ & 2) ? MF_CHECKED : MF_UNCHECKED));
+				EnableMenuItem(subMenu, ID_GEDBG_TRACK_PIXEL_STOP, secondTrackX_ == 0xFFFFFFFF ? MF_GRAYED : MF_ENABLED);
 				break;
 			case ID_GEDBG_EXPORT_IMAGE:
 				PreviewExport(secondBuffer_);
+				break;
+			case ID_GEDBG_COPY_IMAGE:
+				PreviewToClipboard(secondBuffer_, false);
+				break;
+			case ID_GEDBG_COPY_IMAGE_ALPHA:
+				PreviewToClipboard(secondBuffer_, true);
+				break;
+			case ID_GEDBG_TRACK_PIXEL:
+				secondTrackX_ = x;
+				secondTrackY_ = y;
+				break;
+			case ID_GEDBG_TRACK_PIXEL_STOP:
+				secondTrackX_ = 0xFFFFFFFF;
+				secondTrackX_ = 0xFFFFFFFF;
 				break;
 			case ID_GEDBG_ENABLE_PREVIEW:
 				previewsEnabled_ ^= 2;
@@ -338,9 +368,18 @@ void CGEDebugger::SetupPreviews() {
 }
 
 void CGEDebugger::DescribePrimaryPreview(const GPUgstate &state, char desc[256]) {
+	if (primaryTrackX_ < primaryBuffer_->GetStride() && primaryTrackY_ < primaryBuffer_->GetHeight()) {
+		u32 pix = primaryBuffer_->GetRawPixel(primaryTrackX_, primaryTrackY_);
+		DescribePixel(pix, primaryBuffer_->GetFormat(), primaryTrackX_, primaryTrackY_, desc);
+		return;
+	}
+
 	if (showClut_) {
 		// In this case, we're showing the texture here.
-		snprintf(desc, 256, "Texture L%d: 0x%08x (%dx%d)", textureLevel_, state.getTextureAddress(textureLevel_), state.getTextureWidth(textureLevel_), state.getTextureHeight(textureLevel_));
+		if (primaryIsFramebuffer_)
+			snprintf(desc, 256, "FB Tex L%d: 0x%08x (%dx%d)", textureLevel_, state.getTextureAddress(textureLevel_), state.getTextureWidth(textureLevel_), state.getTextureHeight(textureLevel_));
+		else
+			snprintf(desc, 256, "Texture L%d: 0x%08x (%dx%d)", textureLevel_, state.getTextureAddress(textureLevel_), state.getTextureWidth(textureLevel_), state.getTextureHeight(textureLevel_));
 		return;
 	}
 
@@ -362,8 +401,26 @@ void CGEDebugger::DescribePrimaryPreview(const GPUgstate &state, char desc[256])
 }
 
 void CGEDebugger::DescribeSecondPreview(const GPUgstate &state, char desc[256]) {
+	if (secondTrackX_ != 0xFFFFFFFF) {
+		uint32_t x = secondTrackX_;
+		uint32_t y = secondTrackY_;
+		if (showClut_) {
+			uint32_t clutWidth = secondBuffer_->GetStride() / 16;
+			x = y * clutWidth + x;
+			y = 0;
+		}
+
+		if (x < secondBuffer_->GetStride() && y < secondBuffer_->GetHeight()) {
+			u32 pix = secondBuffer_->GetRawPixel(x, y);
+			DescribePixel(pix, secondBuffer_->GetFormat(), x, y, desc);
+			return;
+		}
+	}
+
 	if (showClut_) {
 		snprintf(desc, 256, "CLUT: 0x%08x (%d)", state.getClutAddress(), state.getClutPaletteFormat());
+	} else if (secondIsFramebuffer_) {
+		snprintf(desc, 256, "FB Tex L%d: 0x%08x (%dx%d)", textureLevel_, state.getTextureAddress(textureLevel_), state.getTextureWidth(textureLevel_), state.getTextureHeight(textureLevel_));
 	} else {
 		snprintf(desc, 256, "Texture L%d: 0x%08x (%dx%d)", textureLevel_, state.getTextureAddress(textureLevel_), state.getTextureWidth(textureLevel_), state.getTextureHeight(textureLevel_));
 	}
@@ -391,6 +448,97 @@ void CGEDebugger::PreviewExport(const GPUDebugBuffer *dbgBuffer) {
 		}
 		delete [] flipbuffer;
 	}
+}
+
+void CGEDebugger::PreviewToClipboard(const GPUDebugBuffer *dbgBuffer, bool saveAlpha) {
+	if (!OpenClipboard(GetDlgHandle())) {
+		return;
+	}
+	EmptyClipboard();
+
+	uint8_t *flipbuffer = nullptr;
+	uint32_t w = (uint32_t)-1;
+	uint32_t h = (uint32_t)-1;
+	const uint8_t *buffer = ConvertBufferToScreenshot(*dbgBuffer, saveAlpha, flipbuffer, w, h);
+	if (buffer == nullptr) {
+		delete [] flipbuffer;
+		CloseClipboard();
+		return;
+	}
+
+	uint32_t pixelSize = saveAlpha ? 4 : 3;
+	uint32_t byteStride = pixelSize * w;
+	while ((byteStride & 3) != 0)
+		++byteStride;
+
+	// Various apps don't support alpha well, so also copy as PNG.
+	std::vector<uint8_t> png;
+	if (saveAlpha) {
+		// Overallocate if we can.
+		png.resize(byteStride * h);
+		Save8888RGBAScreenshot(png, buffer, w, h);
+
+		W32Util::ClipboardData png1("PNG", png.size());
+		W32Util::ClipboardData png2("image/png", png.size());
+		if (!png.empty() && png1 && png2) {
+			memcpy(png1.data, png.data(), png.size());
+			memcpy(png2.data, png.data(), png.size());
+			png1.Set();
+			png2.Set();
+		}
+	}
+
+	W32Util::ClipboardData bitmap(CF_DIBV5, sizeof(BITMAPV5HEADER) + byteStride * h);
+	if (!bitmap) {
+		delete [] flipbuffer;
+		CloseClipboard();
+		return;
+	}
+
+	BITMAPV5HEADER *header = (BITMAPV5HEADER *)bitmap.data;
+	header->bV5Size = sizeof(BITMAPV5HEADER);
+	header->bV5Width = w;
+	header->bV5Height = h;
+	header->bV5Planes = 1;
+	header->bV5BitCount = saveAlpha ? 32 : 24;
+	header->bV5Compression = saveAlpha ? BI_BITFIELDS : BI_RGB;
+	header->bV5SizeImage = byteStride * h;
+	header->bV5CSType = LCS_WINDOWS_COLOR_SPACE;
+	header->bV5Intent = LCS_GM_GRAPHICS;
+
+	if (saveAlpha) {
+		header->bV5RedMask = 0x000000FF;
+		header->bV5GreenMask = 0x0000FF00;
+		header->bV5BlueMask = 0x00FF0000;
+		// Only some applications respect the alpha mask...
+		header->bV5AlphaMask = 0xFF000000;
+	}
+
+	uint8_t *pixels = (uint8_t *)(header + 1);
+	for (uint32_t y = 0; y < h; ++y) {
+		const uint8_t *src = buffer + y * pixelSize * w;
+		uint8_t *dst = pixels + (h - y - 1) * byteStride;
+
+		if (saveAlpha) {
+			// No RB swap needed.
+			memcpy(dst, src, pixelSize * w);
+			continue;
+		}
+
+		for (uint32_t x = 0; x < w; ++x) {
+			// Have to swap B/R again for the bitmap, unfortunate.
+			dst[0] = src[2];
+			dst[1] = src[1];
+			dst[2] = src[0];
+			src += pixelSize;
+			dst += pixelSize;
+		}
+	}
+
+	delete [] flipbuffer;
+
+	bitmap.Set();
+	CloseClipboard();
 }
 
 void CGEDebugger::UpdatePreviews() {
@@ -515,8 +663,9 @@ void CGEDebugger::UpdatePrimaryPreview(const GPUgstate &state) {
 	SetupPreviews();
 
 	primaryBuffer_ = nullptr;
+	primaryIsFramebuffer_ = false;
 	if (showClut_) {
-		bufferResult = GPU_GetCurrentTexture(primaryBuffer_, textureLevel_);
+		bufferResult = GPU_GetCurrentTexture(primaryBuffer_, textureLevel_, &primaryIsFramebuffer_);
 		flags = TexturePreviewFlags(state);
 		if (bufferResult) {
 			UpdateLastTexture(state.getTextureAddress(textureLevel_));
@@ -564,10 +713,11 @@ void CGEDebugger::UpdateSecondPreview(const GPUgstate &state) {
 	SetupPreviews();
 
 	secondBuffer_ = nullptr;
+	secondIsFramebuffer_ = false;
 	if (showClut_) {
 		bufferResult = GPU_GetCurrentClut(secondBuffer_);
 	} else {
-		bufferResult = GPU_GetCurrentTexture(secondBuffer_, textureLevel_);
+		bufferResult = GPU_GetCurrentTexture(secondBuffer_, textureLevel_, &secondIsFramebuffer_);
 		if (bufferResult) {
 			UpdateLastTexture(state.getTextureAddress(textureLevel_));
 		} else {
@@ -649,11 +799,13 @@ void CGEDebugger::SecondPreviewHover(int x, int y) {
 		}
 		DescribeSecondPreview(state, desc);
 	} else {
-		u32 pix = secondBuffer_->GetRawPixel(x, y);
 		if (showClut_) {
-			// Show the clut index, rather than coords.
-			DescribePixel(pix, secondBuffer_->GetFormat(), y * 16 + x, 0, desc);
+			// Use the clut index, rather than coords.
+			uint32_t clutWidth = secondBuffer_->GetStride() / 16;
+			u32 pix = secondBuffer_->GetRawPixel(y * clutWidth + x, 0);
+			DescribePixel(pix, secondBuffer_->GetFormat(), y * clutWidth + x, 0, desc);
 		} else {
+			u32 pix = secondBuffer_->GetRawPixel(x, y);
 			DescribePixel(pix, secondBuffer_->GetFormat(), x, y, desc);
 		}
 	}
@@ -687,9 +839,9 @@ void CGEDebugger::DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y,
 
 	case GPU_DBG_FORMAT_24BIT_8X:
 	{
-		DepthScaleFactors depthScale = GetDepthScaleFactors();
+		DepthScaleFactors depthScale = GetDepthScaleFactors(gstate_c.UseFlags());
 		// These are only ever going to be depth values, so let's also show scaled to 16 bit.
-		snprintf(desc, 256, "%d,%d: %d / %f / %f", x, y, pix & 0x00FFFFFF, (pix & 0x00FFFFFF) * (1.0f / 16777215.0f), depthScale.Apply((pix & 0x00FFFFFF) * (1.0f / 16777215.0f)));
+		snprintf(desc, 256, "%d,%d: %d / %f / %f", x, y, pix & 0x00FFFFFF, (pix & 0x00FFFFFF) * (1.0f / 16777215.0f), depthScale.DecodeToU16((pix & 0x00FFFFFF) * (1.0f / 16777215.0f)));
 		break;
 	}
 
@@ -708,8 +860,8 @@ void CGEDebugger::DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y,
 
 	case GPU_DBG_FORMAT_FLOAT: {
 		float pixf = *(float *)&pix;
-		DepthScaleFactors depthScale = GetDepthScaleFactors();
-		snprintf(desc, 256, "%d,%d: %f / %f", x, y, pixf, depthScale.Apply(pixf));
+		DepthScaleFactors depthScale = GetDepthScaleFactors(gstate_c.UseFlags());
+		snprintf(desc, 256, "%d,%d: %f / %f", x, y, pixf, depthScale.DecodeToU16(pixf));
 		break;
 	}
 
@@ -718,11 +870,11 @@ void CGEDebugger::DescribePixel(u32 pix, GPUDebugBufferFormat fmt, int x, int y,
 			double z = *(float *)&pix;
 			int z24 = (int)(z * 16777215.0);
 
-			DepthScaleFactors factors = GetDepthScaleFactors();
+			DepthScaleFactors factors = GetDepthScaleFactors(gstate_c.UseFlags());
 			// TODO: Use GetDepthScaleFactors here too, verify it's the same.
 			int z16 = z24 - 0x800000 + 0x8000;
 
-			int z16_2 = factors.Apply(z);
+			int z16_2 = factors.DecodeToU16(z);
 
 			snprintf(desc, 256, "%d,%d: %d / %f", x, y, z16, (z - 0.5 + (1.0 / 512.0)) * 256.0);
 		}
@@ -839,7 +991,7 @@ void CGEDebugger::UpdateSize(WORD width, WORD height) {
 		tabRect.right = tabRect.left + (width / 2 - tabRect.left * 2);
 	}
 	tabRect.bottom = tabRect.top + (height - tabRect.top - tabRect.left);
-	
+
 	RECT tabRectRight = tabRect;
 	if (tabs && tabsRight_ && tabs->Count() == 0 && tabsRight_->Count() != 0) {
 		tabRect.right = tabRect.left;
@@ -853,7 +1005,7 @@ void CGEDebugger::UpdateSize(WORD width, WORD height) {
 	HWND frameWnd = GetDlgItem(m_hDlg, IDC_GEDBG_FRAME);
 	GetWindowRect(frameWnd, &frameRect);
 	MapWindowPoints(HWND_DESKTOP, m_hDlg, (LPPOINT)&frameRect, 2);
-	
+
 	RECT trRect = { frameRect.right + 10, frameRect.top, tabRectRight.right, tabRectRight.top };
 	if (tabsTR_ && tabsTR_->Count() == 0) {
 		trRect.right = trRect.left;
@@ -893,7 +1045,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		UpdateSize(LOWORD(lParam), HIWORD(lParam));
 		SavePosition();
 		return TRUE;
-		
+
 	case WM_MOVE:
 		SavePosition();
 		return TRUE;
@@ -922,6 +1074,8 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 				UpdatePreviews();
 				lastCounter = GPUStepping::GetSteppingCounter();
 			}
+		} else if (!PSP_IsInited() && primaryBuffer_) {
+			SendMessage(m_hDlg, WM_COMMAND, IDC_GEDBG_RESUME, 0);
 		}
 		break;
 
@@ -975,6 +1129,10 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 
 		case IDC_GEDBG_STEPFRAME:
 			SetBreakNext(BreakNext::FRAME);
+			break;
+
+		case IDC_GEDBG_STEPVSYNC:
+			SetBreakNext(BreakNext::VSYNC);
 			break;
 
 		case IDC_GEDBG_STEPPRIM:
@@ -1055,7 +1213,7 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 		case IDC_GEDBG_RECORD:
 			GPURecord::SetCallback([](const Path &path) {
 				// Opens a Windows Explorer window with the file.
-				OpenDirectory(path.c_str());
+				System_ShowFileInFolder(path.c_str());
 			});
 			GPURecord::Activate();
 			break;
@@ -1108,7 +1266,13 @@ BOOL CGEDebugger::DlgProc(UINT message, WPARAM wParam, LPARAM lParam) {
 			bool temp;
 			bool isBreak = IsAddressBreakpoint(pc, temp);
 			if (isBreak && !temp) {
-				RemoveAddressBreakpoint(pc);
+				if (GetAddressBreakpointCond(pc, nullptr)) {
+					int ret = MessageBox(m_hDlg, L"This breakpoint has a custom condition.\nDo you want to remove it?", L"Confirmation", MB_YESNO);
+					if (ret == IDYES)
+						RemoveAddressBreakpoint(pc);
+				} else {
+					RemoveAddressBreakpoint(pc);
+				}
 			} else {
 				AddAddressBreakpoint(pc);
 			}

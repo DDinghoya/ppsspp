@@ -317,7 +317,8 @@ public:
 
 		int numInternalFonts = (int)internalFonts.size();
 		Do(p, numInternalFonts);
-		if (numInternalFonts != (int)internalFonts.size()) {
+		// It's okay if numInternalFonts was zero and we've now loaded them.
+		if (numInternalFonts != (int)internalFonts.size() && numInternalFonts != 0) {
 			ERROR_LOG(SCEFONT, "Unable to load state: different internal font count.");
 			p.SetError(p.ERROR_FAILURE);
 			return;
@@ -329,6 +330,11 @@ public:
 		if (internalFont == -1) {
 			Do(p, font_);
 		} else if (p.mode == p.MODE_READ) {
+			if (internalFont < 0 || internalFont >= (int)internalFonts.size()) {
+				ERROR_LOG(SCEFONT, "Unable to load state: unexpected internal font index.");
+				p.SetError(p.ERROR_FAILURE);
+				return;
+			}
 			font_ = internalFonts[internalFont];
 		}
 		Do(p, handle_);
@@ -486,8 +492,8 @@ public:
 		// For save states only.
 	}
 
-	FontLib(u32 paramPtr, u32 errorCodePtr) {
-		Memory::ReadStruct(paramPtr, &params_);
+	FontLib(FontNewLibParams *params, u32 errorCodePtr) {
+		params_ = *params;
 		if (params_.numFonts > 9) {
 			params_.numFonts = 9;
 		}
@@ -858,22 +864,21 @@ static void __LoadInternalFonts() {
 	}
 	const std::string fontPath = "flash0:/font/";
 	const std::string fontOverridePath = "ms0:/PSP/flash0/font/";
-	const std::string userfontPath = "disc0:/PSP_GAME/USRDIR/";
-	
+	const std::string gameFontPath = "disc0:/PSP_GAME/USRDIR/";
+
 	if (!pspFileSystem.GetFileInfo(fontPath).exists) {
 		pspFileSystem.MkDir(fontPath);
 	}
 	if ((pspFileSystem.GetFileInfo("disc0:/PSP_GAME/USRDIR/zh_gb.pgf").exists) && (pspFileSystem.GetFileInfo("disc0:/PSP_GAME/USRDIR/oldfont.prx").exists)) {
 		for (size_t i = 0; i < ARRAY_SIZE(fontRegistry); i++) {
 			const FontRegistryEntry &entry = fontRegistry[i];
-			std::string fontFilename = userfontPath + entry.fileName;
-			PSPFileInfo info = pspFileSystem.GetFileInfo(fontFilename);
-			DEBUG_LOG(SCEFONT, "Loading internal font %s (%i bytes)", fontFilename.c_str(), (int)info.size);
+			std::string fontFilename = gameFontPath + entry.fileName;
 			std::vector<u8> buffer;
 			if (pspFileSystem.ReadEntireFile(fontFilename, buffer) < 0) {
-				ERROR_LOG(SCEFONT, "Failed opening font");
+				ERROR_LOG(SCEFONT, "Failed opening font %s", fontFilename.c_str());
 				continue;
 			}
+			DEBUG_LOG(SCEFONT, "Loading internal font %s (%i bytes)", fontFilename.c_str(), (int)buffer.size());
 			internalFonts.push_back(new Font(buffer, entry));
 			DEBUG_LOG(SCEFONT, "Loaded font %s", fontFilename.c_str());
 			return;
@@ -882,29 +887,26 @@ static void __LoadInternalFonts() {
 
 	for (size_t i = 0; i < ARRAY_SIZE(fontRegistry); i++) {
 		const FontRegistryEntry &entry = fontRegistry[i];
-		std::string fontFilename = userfontPath + entry.fileName;
-		PSPFileInfo info = pspFileSystem.GetFileInfo(fontFilename);
+		std::vector<u8> buffer;
+		bool bufferRead = false;
 
-		if (!info.exists) {
-			// No user font, let's try override path.
+		std::string fontFilename = gameFontPath + entry.fileName;
+		bufferRead = pspFileSystem.ReadEntireFile(fontFilename, buffer, true) >= 0;
+
+		if (!bufferRead) {
+			// No game font, let's try override path.
 			fontFilename = fontOverridePath + entry.fileName;
-			info = pspFileSystem.GetFileInfo(fontFilename);
+			bufferRead = pspFileSystem.ReadEntireFile(fontFilename, buffer, true) >= 0;
 		}
 
-		if (!info.exists) {
+		if (!bufferRead) {
 			// No override, let's use the default path.
 			fontFilename = fontPath + entry.fileName;
-			info = pspFileSystem.GetFileInfo(fontFilename);
+			bufferRead = pspFileSystem.ReadEntireFile(fontFilename, buffer) >= 0;
 		}
 
-		if (info.exists) {
-			DEBUG_LOG(SCEFONT, "Loading internal font %s (%i bytes)", fontFilename.c_str(), (int)info.size);
-			std::vector<u8> buffer;
-			if (pspFileSystem.ReadEntireFile(fontFilename, buffer) < 0) {
-				ERROR_LOG(SCEFONT, "Failed opening font");
-				continue;
-			}
-			
+		if (bufferRead) {
+			DEBUG_LOG(SCEFONT, "Loading internal font %s (%i bytes)", fontFilename.c_str(), (int)buffer.size());
 			internalFonts.push_back(new Font(buffer, entry));
 
 			DEBUG_LOG(SCEFONT, "Loaded font %s", fontFilename.c_str());
@@ -951,11 +953,18 @@ void __FontShutdown() {
 }
 
 void __FontDoState(PointerWrap &p) {
-	auto s = p.Section("sceFont", 1, 2);
+	auto s = p.Section("sceFont", 1, 3);
 	if (!s)
 		return;
 
-	__LoadInternalFonts();
+	bool needInternalFonts = true;
+	if (s >= 3) {
+		// If we loaded internal fonts, we need to load them when loading the state.
+		needInternalFonts = !internalFonts.empty();
+		Do(p, needInternalFonts);
+	}
+	if (needInternalFonts)
+		__LoadInternalFonts();
 
 	Do(p, fontLibList);
 	Do(p, fontLibMap);
@@ -998,7 +1007,7 @@ static u32 sceFontNewLib(u32 paramPtr, u32 errorCodePtr) {
 	INFO_LOG(SCEFONT, "sceFontNewLib(%08x, %08x)", paramPtr, errorCodePtr);
 	*errorCode = 0;
 
-	FontLib *newLib = new FontLib(paramPtr, errorCodePtr);
+	FontLib *newLib = new FontLib(params, errorCodePtr);
 	fontLibList.push_back(newLib);
 	// The game should never see this value, the return value is replaced
 	// by the action. Except if we disable the alloc, in this case we return
@@ -1143,27 +1152,23 @@ static int sceFontClose(u32 fontHandle) {
 static int sceFontFindOptimumFont(u32 libHandle, u32 fontStylePtr, u32 errorCodePtr) {
 	auto errorCode = PSPPointer<s32_le>::Create(errorCodePtr);
 	if (!errorCode.IsValid()) {
-		ERROR_LOG_REPORT(SCEFONT, "sceFontFindOptimumFont(%08x, %08x, %08x): invalid error address", libHandle, fontStylePtr, errorCodePtr);
-		return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
+		return hleReportError(SCEFONT, SCE_KERNEL_ERROR_INVALID_ARGUMENT, "invalid error address");
 	}
 
 	FontLib *fontLib = GetFontLib(libHandle);
 	if (!fontLib) {
-		ERROR_LOG_REPORT(SCEFONT, "sceFontFindOptimumFont(%08x, %08x, %08x): invalid font lib", libHandle, fontStylePtr, errorCodePtr);
 		*errorCode = ERROR_FONT_INVALID_LIBID;
-		return 0;
+		return hleReportError(SCEFONT, 0, "invalid font lib");
 	}
 
 	if (!Memory::IsValidAddress(fontStylePtr)) {
-		ERROR_LOG_REPORT(SCEFONT, "sceFontFindOptimumFont(%08x, %08x, %08x): invalid style address", libHandle, fontStylePtr, errorCodePtr);
 		// Yes, actually.  Must've been a typo in the library.
 		*errorCode = ERROR_FONT_INVALID_LIBID;
-		return 0;
+		return hleReportError(SCEFONT, 0, "invalid style address");
 	}
 
-	DEBUG_LOG(SCEFONT, "sceFontFindOptimumFont(%08x, %08x, %08x)", libHandle, fontStylePtr, errorCodePtr);
-
 	auto requestedStyle = PSPPointer<const PGFFontStyle>::Create(fontStylePtr);
+	DEBUG_LOG(SCEFONT, "requestedStyle fontAttributes %i,fontCountry %i,fontExpire %i,fontFamily %i,fontFileName %s,fontH %f,fontHRes %f,fontLanguage %i,fontName %s,fontRegion %i,fontStyle %i,fontStyleSub %i,fontV %f,fontVRes %f,fontWeight %f", requestedStyle->fontAttributes, requestedStyle->fontCountry, requestedStyle->fontExpire, requestedStyle->fontFamily, requestedStyle->fontFileName, requestedStyle->fontH, requestedStyle->fontHRes, requestedStyle->fontLanguage, requestedStyle->fontName, requestedStyle->fontRegion, requestedStyle->fontStyle, requestedStyle->fontStyleSub, requestedStyle->fontV, requestedStyle->fontVRes, requestedStyle->fontWeight);
 
 	// Find the first nearest match for H/V, OR the last exact match for others.
 	float hRes = requestedStyle->fontHRes > 0.0f ? (float)requestedStyle->fontHRes : fontLib->FontHRes();
@@ -1200,10 +1205,10 @@ static int sceFontFindOptimumFont(u32 libHandle, u32 fontStylePtr, u32 errorCode
 	}
 	if (optimumFont) {
 		*errorCode = 0;
-		return GetInternalFontIndex(optimumFont);
+		return hleLogSuccessInfoX(SCEFONT, GetInternalFontIndex(optimumFont) ,"");
 	} else {
 		*errorCode = 0;
-		return 0;
+		return hleLogSuccessInfoX(SCEFONT, 0, "");
 	}
 }
 
@@ -1231,6 +1236,7 @@ static int sceFontFindFont(u32 libHandle, u32 fontStylePtr, u32 errorCodePtr) {
 	DEBUG_LOG(SCEFONT, "sceFontFindFont(%x, %x, %x)", libHandle, fontStylePtr, errorCodePtr);
 
 	auto requestedStyle = PSPPointer<const PGFFontStyle>::Create(fontStylePtr);
+	DEBUG_LOG(SCEFONT, "requestedStyle fontAttributes %i,fontCountry %i,fontExpire %i,fontFamily %i,fontFileName %s,fontH %f,fontHRes %f,fontLanguage %i,fontName %s,fontRegion %i,fontStyle %i,fontStyleSub %i,fontV %f,fontVRes %f,fontWeight %f", requestedStyle->fontAttributes, requestedStyle->fontCountry, requestedStyle->fontExpire, requestedStyle->fontFamily, requestedStyle->fontFileName, requestedStyle->fontH, requestedStyle->fontHRes, requestedStyle->fontLanguage, requestedStyle->fontName, requestedStyle->fontRegion, requestedStyle->fontStyle, requestedStyle->fontStyleSub, requestedStyle->fontV, requestedStyle->fontVRes, requestedStyle->fontWeight);
 
 	// Find the closest exact match for the fields specified.
 	float hRes = requestedStyle->fontHRes > 0.0f ? (float)requestedStyle->fontHRes : fontLib->FontHRes();

@@ -95,19 +95,18 @@ bool RunTests() {
 	coreParam.mountIso.clear();
 	coreParam.mountRoot = baseDirectory / "pspautotests";
 	coreParam.startBreak = false;
-	coreParam.printfEmuLog = false;
 	coreParam.headLess = true;
 	coreParam.renderWidth = 480;
 	coreParam.renderHeight = 272;
 	coreParam.pixelWidth = 480;
 	coreParam.pixelHeight = 272;
-	coreParam.collectEmuLog = &output;
+	coreParam.collectDebugOutput = &output;
 	coreParam.fastForward = true;
 	coreParam.updateRecent = false;
 
 	// Never report from tests.
 	std::string savedReportHost = g_Config.sReportHost;
-	g_Config.sReportHost = "";
+	g_Config.sReportHost.clear();
 
 	for (size_t i = 0; i < ARRAY_SIZE(testsToRun); i++) {
 		std::string testName = testsToRun[i];
@@ -116,11 +115,11 @@ bool RunTests() {
 
 		INFO_LOG(SYSTEM, "Preparing to execute '%s'", testName.c_str());
 		std::string error_string;
-		output = "";
+		output.clear();
 		if (!PSP_Init(coreParam, &error_string)) {
 			ERROR_LOG(SYSTEM, "Failed to init unittest %s : %s", testsToRun[i], error_string.c_str());
-			PSP_CoreParameter().pixelWidth = pixel_xres;
-			PSP_CoreParameter().pixelHeight = pixel_yres;
+			PSP_CoreParameter().pixelWidth = g_display.pixel_xres;
+			PSP_CoreParameter().pixelHeight = g_display.pixel_yres;
 			return false;
 		}
 
@@ -176,8 +175,8 @@ bool RunTests() {
 		}
 		PSP_Shutdown();
 	}
-	PSP_CoreParameter().pixelWidth = pixel_xres;
-	PSP_CoreParameter().pixelHeight = pixel_yres;
+	PSP_CoreParameter().pixelWidth = g_display.pixel_xres;
+	PSP_CoreParameter().pixelHeight = g_display.pixel_yres;
 	PSP_CoreParameter().headLess = false;
 	PSP_CoreParameter().graphicsContext = tempCtx;
 

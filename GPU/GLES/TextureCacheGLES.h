@@ -27,22 +27,22 @@
 
 struct VirtualFramebuffer;
 class FramebufferManagerGLES;
-class DepalShaderCache;
+class TextureShaderCache;
 class ShaderManagerGLES;
 class DrawEngineGLES;
 class GLRTexture;
 
 class TextureCacheGLES : public TextureCacheCommon {
 public:
-	TextureCacheGLES(Draw::DrawContext *draw);
+	TextureCacheGLES(Draw::DrawContext *draw, Draw2D *draw2D);
 	~TextureCacheGLES();
 
 	void Clear(bool delete_them) override;
 	void StartFrame() override;
 
 	void SetFramebufferManager(FramebufferManagerGLES *fbManager);
-	void SetDepalShaderCache(DepalShaderCache *dpCache) {
-		depalShaderCache_ = dpCache;
+	void SetDepalShaderCache(TextureShaderCache *dpCache) {
+		textureShaderCache_ = dpCache;
 	}
 	void SetDrawEngine(DrawEngineGLES *td) {
 		drawEngine_ = td;
@@ -51,21 +51,19 @@ public:
 	void ForgetLastTexture() override {
 		lastBoundTexture = nullptr;
 	}
-	void InvalidateLastTexture() override {
-		lastBoundTexture = nullptr;
-	}
 
-	bool GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level) override;
+	bool GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level, bool *isFramebuffer) override;
 
-	void DeviceLost();
-	void DeviceRestore(Draw::DrawContext *draw);
+	void DeviceLost() override;
+	void DeviceRestore(Draw::DrawContext *draw) override;
 
 protected:
 	void BindTexture(TexCacheEntry *entry) override;
 	void Unbind() override;
 	void ReleaseTexture(TexCacheEntry *entry, bool delete_them) override;
 
-	void BindAsClutTexture(Draw::Texture *tex) override;
+	void BindAsClutTexture(Draw::Texture *tex, bool smooth) override;
+	void *GetNativeTextureView(const TexCacheEntry *entry) override;
 
 private:
 	void ApplySamplingParams(const SamplerCacheKey &key) override;

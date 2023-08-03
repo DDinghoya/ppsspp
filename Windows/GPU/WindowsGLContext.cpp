@@ -22,12 +22,12 @@
 #include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/GPU/thin3d_create.h"
 #include "Common/GPU/OpenGL/GLRenderManager.h"
+#include "Common/System/OSD.h"
 #include "GL/gl.h"
 #include "GL/wglew.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
-#include "Core/Host.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/Data/Text/I18n.h"
 #include "UI/OnScreenDisplay.h"
@@ -90,7 +90,7 @@ void WindowsGLContext::Resume() {
 void FormatDebugOutputARB(char outStr[], size_t outStrSize, GLenum source, GLenum type,
 													GLuint id, GLenum severity, const char *msg) {
 
-	char sourceStr[32];
+	char sourceStr[32]{};
 	const char *sourceFmt;
 	switch(source) {
 	case GL_DEBUG_SOURCE_API_ARB:             sourceFmt = "API"; break;
@@ -103,7 +103,7 @@ void FormatDebugOutputARB(char outStr[], size_t outStrSize, GLenum source, GLenu
 	}
 	snprintf(sourceStr, sizeof(sourceStr), sourceFmt, source);
 
-	char typeStr[32];
+	char typeStr[32]{};
 	const char *typeFmt;
 	switch(type) {
 	case GL_DEBUG_TYPE_ERROR_ARB:               typeFmt = "ERROR"; break;
@@ -116,7 +116,7 @@ void FormatDebugOutputARB(char outStr[], size_t outStrSize, GLenum source, GLenu
 	}
 	snprintf(typeStr, sizeof(typeStr), typeFmt, type);
 
-	char severityStr[32];
+	char severityStr[32]{};
 	const char *severityFmt;
 	switch (severity) {
 	case GL_DEBUG_SEVERITY_HIGH_ARB:   severityFmt = "HIGH"; break;
@@ -130,7 +130,7 @@ void FormatDebugOutputARB(char outStr[], size_t outStrSize, GLenum source, GLenu
 }
 
 void DebugCallbackARB(GLenum source, GLenum type, GLuint id, GLenum severity,
-											GLsizei length, const GLchar *message, GLvoid *userParam) {
+                      GLsizei length, const GLchar *message, GLvoid *userParam) {
 	// Ignore buffer mapping messages from NVIDIA
 	if (source == GL_DEBUG_SOURCE_API_ARB && type == GL_DEBUG_TYPE_OTHER_ARB && id == 131185) {
 		return;
@@ -241,7 +241,7 @@ bool WindowsGLContext::InitFromRenderThread(std::string *error_message) {
 
 	// GL_VERSION                        GL_VENDOR        GL_RENDERER
 	// "1.4.0 - Build 8.14.10.2364"      "intel"          intel Pineview Platform
-	auto err = GetI18NCategory("Error");
+	auto err = GetI18NCategory(I18NCat::ERRORS);
 
 	std::string glVersion = (const char *)glGetString(GL_VERSION);
 	std::string glRenderer = (const char *)glGetString(GL_RENDERER);
@@ -422,7 +422,7 @@ bool WindowsGLContext::InitFromRenderThread(std::string *error_message) {
 	}
 
 	draw_->SetErrorCallback([](const char *shortDesc, const char *details, void *userdata) {
-		host->NotifyUserMessage(details, 5.0, 0xFFFFFFFF, "error_callback");
+		g_OSD.Show(OSDType::MESSAGE_ERROR, details, 0.0f, "error_callback");
 	}, nullptr);
 
 	// These are auto-reset events.
@@ -432,7 +432,7 @@ bool WindowsGLContext::InitFromRenderThread(std::string *error_message) {
 	renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	renderManager_->SetInflightFrames(g_Config.iInflightFrames);
 	SetGPUBackend(GPUBackend::OPENGL);
-	renderManager_->SetSwapFunction([&]() {::SwapBuffers(hDC); });
+	renderManager_->SetSwapFunction([&]() {::SwapBuffers(hDC); }, true);
 	if (wglSwapIntervalEXT) {
 		// glew loads wglSwapIntervalEXT if available
 		renderManager_->SetSwapIntervalFunction([&](int interval) {
@@ -500,6 +500,5 @@ void WindowsGLContext::ThreadEnd() {
 }
 
 void WindowsGLContext::StopThread() {
-	renderManager_->WaitUntilQueueIdle();
 	renderManager_->StopThread();
 }

@@ -43,6 +43,7 @@
 #include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/Vulkan/StateMappingVulkan.h"
+#include "GPU/Vulkan/VulkanRenderManager.h"
 
 struct DecVtxFormat;
 struct UVScale;
@@ -54,10 +55,10 @@ class FramebufferManagerVulkan;
 
 class VulkanContext;
 class VulkanPushBuffer;
+class VulkanPushPool;
 struct VulkanPipeline;
 
 struct DrawEngineVulkanStats {
-	int pushUBOSpaceUsed;
 	int pushVertexSpaceUsed;
 	int pushIndexSpaceUsed;
 };
@@ -81,8 +82,8 @@ public:
 		VAI_UNRELIABLE,  // never cache
 	};
 
-	uint64_t hash;
-	u32 minihash;
+	uint64_t hash = 0;
+	u32 minihash = 0;
 
 	// These will probably always be the same, but whatever.
 	VkBuffer vb = VK_NULL_HANDLE;
@@ -111,21 +112,37 @@ class TessellationDataTransferVulkan : public TessellationDataTransfer  {
 public:
 	TessellationDataTransferVulkan(VulkanContext *vulkan) : vulkan_(vulkan) {}
 
-	void SetPushBuffer(VulkanPushBuffer *push) { push_ = push; }
+	void SetPushPool(VulkanPushPool *push) { push_ = push; }
 	// Send spline/bezier's control points and weights to vertex shader through structured shader buffer.
 	void SendDataToShader(const SimpleVertex *const *points, int size_u, int size_v, u32 vertType, const Spline::Weight2D &weights) override;
 	const VkDescriptorBufferInfo *GetBufferInfo() { return bufInfo_; }
 private:
 	VulkanContext *vulkan_;
-	VulkanPushBuffer *push_;  // Updated each frame.
+	VulkanPushPool *push_;  // Updated each frame.
 	VkDescriptorBufferInfo bufInfo_[3]{};
+};
+
+enum {
+	DRAW_BINDING_TEXTURE = 0,
+	DRAW_BINDING_2ND_TEXTURE = 1,
+	DRAW_BINDING_DEPAL_TEXTURE = 2,
+	DRAW_BINDING_DYNUBO_BASE = 3,
+	DRAW_BINDING_DYNUBO_LIGHT = 4,
+	DRAW_BINDING_DYNUBO_BONE = 5,
+	DRAW_BINDING_TESS_STORAGE_BUF = 6,
+	DRAW_BINDING_TESS_STORAGE_BUF_WU = 7,
+	DRAW_BINDING_TESS_STORAGE_BUF_WV = 8,
+	DRAW_BINDING_COUNT = 9,
 };
 
 // Handles transform, lighting and drawing.
 class DrawEngineVulkan : public DrawEngineCommon {
 public:
 	DrawEngineVulkan(Draw::DrawContext *draw);
-	virtual ~DrawEngineVulkan();
+	~DrawEngineVulkan();
+
+	// We reference feature flags, so this is called after construction.
+	void InitDeviceObjects();
 
 	void SetShaderManager(ShaderManagerVulkan *shaderManager) {
 		shaderManager_ = shaderManager;
@@ -140,18 +157,18 @@ public:
 		framebufferManager_ = fbManager;
 	}
 
-	void DeviceLost();
-	void DeviceRestore(Draw::DrawContext *draw);
+	void DeviceLost() override;
+	void DeviceRestore(Draw::DrawContext *draw) override;
 
 	// So that this can be inlined
 	void Flush() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
 		DoFlush();
 	}
 
 	void FinishDeferred() {
-		if (!numDrawCalls)
+		if (!numDrawCalls_)
 			return;
 		// Decode any pending vertices. And also flush while we're at it, for simplicity.
 		// It might be possible to only decode like in the other backends, but meh, it can't matter.
@@ -159,7 +176,11 @@ public:
 		DoFlush();
 	}
 
-	void DispatchFlush() override { Flush(); }
+	void DispatchFlush() override {
+		if (!numDrawCalls_)
+			return;
+		Flush();
+	}
 
 	VkPipelineLayout GetPipelineLayout() const {
 		return pipelineLayout_;
@@ -174,31 +195,35 @@ public:
 		lastPipeline_ = nullptr;
 	}
 
-	VulkanPushBuffer *GetPushBufferForTextureData() {
-		return GetCurFrame().pushUBO;
+	VulkanPushPool *GetPushBufferForTextureData() {
+		return pushUBO_;
 	}
 
 	const DrawEngineVulkanStats &GetStats() const {
 		return stats_;
 	}
 
-	void SetDepalTexture(VkImageView depal) {
+	void SetDepalTexture(VkImageView depal, bool smooth) {
 		if (boundDepal_ != depal) {
 			boundDepal_ = depal;
+			boundDepalSmoothed_ = smooth;
 			gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
 		}
 	}
 
 private:
+	void Invalidate(InvalidationCallbackFlags flags);
+
 	struct FrameData;
 	void ApplyDrawStateLate(VulkanRenderManager *renderManager, bool applyStencilRef, uint8_t stencilRef, bool useBlendConstant);
 	void ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManager, ShaderManagerVulkan *shaderManager, int prim, VulkanPipelineRasterStateKey &key, VulkanDynamicState &dynState);
 	void BindShaderBlendTex();
-	void ResetFramebufferRead();
 
-	void InitDeviceObjects();
 	void DestroyDeviceObjects();
 
+	bool VertexCacheLookup(int &vertexCount, GEPrimitiveType &prim, VkBuffer &vbuf, uint32_t &vbOffset, VkBuffer &ibuf, uint32_t &ibOffset, bool &useElements, bool forceIndexed);
+
+	void DecodeVertsToPushPool(VulkanPushPool *push, uint32_t *bindOffset, VkBuffer *vkbuf);
 	void DecodeVertsToPushBuffer(VulkanPushBuffer *push, uint32_t *bindOffset, VkBuffer *vkbuf);
 
 	void DoFlush();
@@ -209,16 +234,22 @@ private:
 
 	Draw::DrawContext *draw_;
 
-	// We use a single descriptor set layout for all PSP draws.
+	// We use a shared descriptor set layouts for all PSP draws.
+	// Descriptors created from descriptorSetLayout_ is rebound all the time at set 1.
 	VkDescriptorSetLayout descriptorSetLayout_;
+
 	VkPipelineLayout pipelineLayout_;
 	VulkanPipeline *lastPipeline_;
 	VkDescriptorSet lastDs_ = VK_NULL_HANDLE;
 
 	// Secondary texture for shader blending
 	VkImageView boundSecondary_ = VK_NULL_HANDLE;
+
+	// CLUT texture for shader depal
 	VkImageView boundDepal_ = VK_NULL_HANDLE;
-	VkSampler samplerSecondary_ = VK_NULL_HANDLE;  // This one is actually never used since we use fetch.
+	bool boundDepalSmoothed_ = false;
+	VkSampler samplerSecondaryLinear_ = VK_NULL_HANDLE;
+	VkSampler samplerSecondaryNearest_ = VK_NULL_HANDLE;
 
 	PrehashMap<VertexArrayInfoVulkan *, nullptr> vai_;
 	VulkanPushBuffer *vertexCache_;
@@ -241,10 +272,6 @@ private:
 
 		VulkanDescSetPool descPool;
 
-		VulkanPushBuffer *pushUBO = nullptr;
-		VulkanPushBuffer *pushVertex = nullptr;
-		VulkanPushBuffer *pushIndex = nullptr;
-
 		// We do rolling allocation and reset instead of caching across frames. That we might do later.
 		DenseHashMap<DescriptorSetKey, VkDescriptorSet, (VkDescriptorSet)VK_NULL_HANDLE> descSets;
 
@@ -253,6 +280,12 @@ private:
 
 	GEPrimitiveType lastPrim_ = GE_PRIM_INVALID;
 	FrameData frame_[VulkanContext::MAX_INFLIGHT_FRAMES];
+
+	// This one's not accurately named, it's used for all kinds of stuff that's not vertices or indices.
+	VulkanPushPool *pushUBO_ = nullptr;
+
+	VulkanPushPool *pushVertex_ = nullptr;
+	VulkanPushPool *pushIndex_ = nullptr;
 
 	// Other
 	ShaderManagerVulkan *shaderManager_ = nullptr;
@@ -278,9 +311,8 @@ private:
 	VulkanDynamicState dynState_{};
 
 	int tessOffset_ = 0;
+	FBOTexState fboTexBindState_ = FBO_TEX_NONE;
 
 	// Hardware tessellation
 	TessellationDataTransferVulkan *tessDataTransferVulkan;
-
-	int lastRenderStepId_ = -1;
 };

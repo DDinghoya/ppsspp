@@ -58,7 +58,7 @@ public:
 	void Update();
 
 	GameManagerState GetState() {
-		if (installInProgress_)
+		if (installInProgress_ || installDonePending_)
 			return GameManagerState::INSTALLING;
 		if (curDownload_)
 			return GameManagerState::DOWNLOADING;
@@ -79,6 +79,7 @@ public:
 private:
 	bool InstallGame(Path url, Path tempFileName, bool deleteAfter);
 	bool InstallMemstickGame(struct zip *z, const Path &zipFile, const Path &dest, const ZipFileInfo &info, bool allowRoot, bool deleteAfter);
+	bool InstallMemstickZip(struct zip *z, const Path &zipFile, const Path &dest, const ZipFileInfo &info, bool deleteAfter);
 	bool InstallZippedISO(struct zip *z, int isoFileIndex, const Path &zipfile, bool deleteAfter);
 	bool InstallRawISO(const Path &zipFile, const std::string &originalName, bool deleteAfter);
 	void InstallDone();
@@ -90,7 +91,7 @@ private:
 	std::string GetGameID(const Path &path) const;
 	std::string GetPBPGameID(FileLoader *loader) const;
 	std::string GetISOGameID(FileLoader *loader) const;
-	std::shared_ptr<http::Download> curDownload_;
+	std::shared_ptr<http::Request> curDownload_;
 	std::shared_ptr<std::thread> installThread_;
 	bool installInProgress_ = false;
 	bool installDonePending_ = false;

@@ -40,7 +40,7 @@ public:
 	bool     OwnsHandle(u32 handle) override;
 	int      Ioctl(u32 handle, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen, int &usec) override;
 	PSPDevType DevType(u32 handle) override;
-	std::vector<PSPFileInfo> GetDirListing(std::string path) override;
+	std::vector<PSPFileInfo> GetDirListing(const std::string &path, bool *exists = nullptr) override;
 	FileSystemFlags Flags() override { return FileSystemFlags::UMD; }
 	u64  FreeSpace(const std::string &path) override { return 0; }
 
@@ -76,14 +76,18 @@ private:
 
 		typedef bool (*InitFunc)(HandlerLogFunc logger, void *loggerArg);
 		typedef void (*ShutdownFunc)();
+		typedef void (*ShutdownV2Func)(void *loggerArg);
 		typedef HandlerHandle (*OpenFunc)(const char *basePath, const char *filename);
 		typedef HandlerOffset (*SeekFunc)(HandlerHandle handle, HandlerOffset offset, FileMove origin);
 		typedef HandlerOffset (*ReadFunc)(HandlerHandle handle, void *data, HandlerOffset size);
 		typedef void (*CloseFunc)(HandlerHandle handle);
+		typedef int (*VersionFunc)();
 
 		HandlerLibrary library;
+		VirtualDiscFileSystem *const sys_;
 		InitFunc Init;
 		ShutdownFunc Shutdown;
+		ShutdownV2Func ShutdownV2;
 		OpenFunc Open;
 		SeekFunc Seek;
 		ReadFunc Read;

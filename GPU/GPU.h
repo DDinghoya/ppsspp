@@ -19,20 +19,16 @@
 #pragma once
 
 #include <cstring>
+#include <cstdint>
 
 class GPUInterface;
 class GPUDebugInterface;
 class GraphicsContext;
 
-enum RasterMode {
-	RASTER_MODE_NORMAL = 0,
-	RASTER_MODE_COLOR_TO_DEPTH = 1,
-};
-
 // PSP rasterization has two outputs, color and depth. Stencil is packed
 // into the alpha channel of color (if exists), so possibly RASTER_COLOR
 // should be named RASTER_COLOR_STENCIL but it gets kinda hard to read.
-enum RasterChannel {
+enum RasterChannel : uint8_t {
 	RASTER_COLOR = 0,
 	RASTER_DEPTH = 1,
 };
@@ -42,6 +38,13 @@ enum SkipDrawReasonFlags {
 	SKIPDRAW_NON_DISPLAYED_FB = 2,   // Skip drawing to FBO:s that have not been displayed.
 	SKIPDRAW_BAD_FB_TEXTURE = 4,
 	SKIPDRAW_WINDOW_MINIMIZED = 8, // Don't draw when the host window is minimized.
+};
+
+enum class ShaderDepalMode {
+	OFF = 0,
+	NORMAL = 1,
+	SMOOTHED = 2,
+	CLUT8_8888 = 3,  // Read 8888 framebuffer as 8-bit CLUT.
 };
 
 // Global GPU-related utility functions. 
@@ -63,14 +66,17 @@ inline unsigned int toFloat24(float f) {
 	return i >> 8;
 }
 
+// The ToString function lives in GPUCommonHW.cpp.
 struct GPUStatistics {
 	void Reset() {
-		// Never add a vtable :)
-		memset(this, 0, sizeof(*this));
+		ResetFrame();
+		numFlips = 0;
 	}
 
 	void ResetFrame() {
 		numDrawCalls = 0;
+		numDrawSyncs = 0;
+		numListSyncs = 0;
 		numCachedDrawCalls = 0;
 		numVertsSubmitted = 0;
 		numCachedVertsDrawn = 0;
@@ -79,26 +85,38 @@ struct GPUStatistics {
 		numTextureInvalidations = 0;
 		numTextureInvalidationsByFramebuffer = 0;
 		numTexturesHashed = 0;
-		numTextureSwitches = 0;
 		numTextureDataBytesHashed = 0;
-		numShaderSwitches = 0;
 		numFlushes = 0;
+		numBBOXJumps = 0;
+		numPlaneUpdates = 0;
 		numTexturesDecoded = 0;
 		numFramebufferEvaluations = 0;
+		numBlockingReadbacks = 0;
 		numReadbacks = 0;
 		numUploads = 0;
+		numDepal = 0;
 		numClears = 0;
 		numDepthCopies = 0;
+		numReinterpretCopies = 0;
+		numColorCopies = 0;
+		numCopiesForShaderBlend = 0;
+		numCopiesForSelfTex = 0;
+		numDrawPixels = 0;
+		numReplacerTrackedTex = 0;
+		numCachedReplacedTextures = 0;
 		msProcessingDisplayLists = 0;
 		vertexGPUCycles = 0;
 		otherGPUCycles = 0;
-		memset(gpuCommandsAtCallLevel, 0, sizeof(gpuCommandsAtCallLevel));
 	}
 
 	// Per frame statistics
 	int numDrawCalls;
+	int numDrawSyncs;
+	int numListSyncs;
 	int numCachedDrawCalls;
 	int numFlushes;
+	int numBBOXJumps;
+	int numPlaneUpdates;
 	int numVertsSubmitted;
 	int numCachedVertsDrawn;
 	int numUncachedVertsDrawn;
@@ -107,18 +125,24 @@ struct GPUStatistics {
 	int numTextureInvalidationsByFramebuffer;
 	int numTexturesHashed;
 	int numTextureDataBytesHashed;
-	int numTextureSwitches;
-	int numShaderSwitches;
 	int numTexturesDecoded;
 	int numFramebufferEvaluations;
+	int numBlockingReadbacks;
 	int numReadbacks;
 	int numUploads;
+	int numDepal;
 	int numClears;
 	int numDepthCopies;
+	int numReinterpretCopies;
+	int numColorCopies;
+	int numCopiesForShaderBlend;
+	int numCopiesForSelfTex;
+	int numDrawPixels;
+	int numReplacerTrackedTex;
+	int numCachedReplacedTextures;
 	double msProcessingDisplayLists;
 	int vertexGPUCycles;
 	int otherGPUCycles;
-	int gpuCommandsAtCallLevel[4];
 
 	// Flip count. Doesn't really belong here.
 	int numFlips;
@@ -134,4 +158,7 @@ namespace Draw {
 
 bool GPU_Init(GraphicsContext *ctx, Draw::DrawContext *draw);
 bool GPU_IsReady();
+bool GPU_IsStarted();
 void GPU_Shutdown();
+
+const char *RasterChannelToString(RasterChannel channel);

@@ -203,18 +203,11 @@ int sceKernelCancelSema(SceUID id, int newCount, u32 numWaitThreadsPtr)
 	}
 }
 
-int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32 optionPtr)
-{
+int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32 optionPtr) {
 	if (!name)
-	{
-		WARN_LOG_REPORT(SCEKERNEL, "%08x=sceKernelCreateSema(): invalid name", SCE_KERNEL_ERROR_ERROR);
-		return SCE_KERNEL_ERROR_ERROR;
-	}
+		return hleLogWarning(SCEKERNEL, SCE_KERNEL_ERROR_ERROR, "invalid name");
 	if (attr >= 0x200)
-	{
-		WARN_LOG_REPORT(SCEKERNEL, "%08x=sceKernelCreateSema(): invalid attr parameter: %08x", SCE_KERNEL_ERROR_ILLEGAL_ATTR, attr);
-		return SCE_KERNEL_ERROR_ILLEGAL_ATTR;
-	}
+		return hleLogWarning(SCEKERNEL, SCE_KERNEL_ERROR_ILLEGAL_ATTR, "invalid attr parameter %08x", attr);
 
 	PSPSemaphore *s = new PSPSemaphore();
 	SceUID id = kernelObjects.Create(s);
@@ -228,18 +221,17 @@ int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32
 	s->ns.maxCount = maxVal;
 	s->ns.numWaitThreads = 0;
 
-	DEBUG_LOG(SCEKERNEL, "%i=sceKernelCreateSema(%s, %08x, %i, %i, %08x)", id, s->ns.name, s->ns.attr, s->ns.initCount, s->ns.maxCount, optionPtr);
-
-	if (optionPtr != 0)
-	{
-		u32 size = Memory::Read_U32(optionPtr);
-		if (size > 4)
-			WARN_LOG_REPORT(SCEKERNEL, "sceKernelCreateSema(%s) unsupported options parameter, size = %d", name, size);
+	// Many games pass garbage into optionPtr, it doesn't have any options.
+	if (optionPtr != 0) {
+		if (!Memory::IsValidRange(optionPtr, 4))
+			hleLogWarning(SCEKERNEL, id, "invalid options parameter");
+		else if (Memory::Read_U32(optionPtr) > 4)
+			hleLogDebug(SCEKERNEL, id, "invalid options parameter size");
 	}
 	if ((attr & ~PSP_SEMA_ATTR_PRIORITY) != 0)
 		WARN_LOG_REPORT(SCEKERNEL, "sceKernelCreateSema(%s) unsupported attr parameter: %08x", name, attr);
 
-	return id;
+	return hleLogSuccessX(SCEKERNEL, id);
 }
 
 int sceKernelDeleteSema(SceUID id)
@@ -263,28 +255,24 @@ int sceKernelDeleteSema(SceUID id)
 	}
 }
 
-int sceKernelReferSemaStatus(SceUID id, u32 infoPtr)
-{
+int sceKernelReferSemaStatus(SceUID id, u32 infoPtr) {
 	u32 error;
 	PSPSemaphore *s = kernelObjects.Get<PSPSemaphore>(id, error);
-	if (s)
-	{
-		DEBUG_LOG(SCEKERNEL, "sceKernelReferSemaStatus(%i, %08x)", id, infoPtr);
-
-		if (!Memory::IsValidAddress(infoPtr))
-			return -1;
+	if (s) {
+		auto info = PSPPointer<NativeSemaphore>::Create(infoPtr);
+		if (!info.IsValid())
+			return hleLogWarning(SCEKERNEL, -1, "invalid pointer");
 
 		HLEKernel::CleanupWaitingThreads(WAITTYPE_SEMA, id, s->waitingThreads);
 
 		s->ns.numWaitThreads = (int) s->waitingThreads.size();
-		if (Memory::Read_U32(infoPtr) != 0)
-			Memory::WriteStruct(infoPtr, &s->ns);
-		return 0;
-	}
-	else
-	{
-		ERROR_LOG(SCEKERNEL, "sceKernelReferSemaStatus: error %08x", error);
-		return error;
+		if (info->size != 0) {
+			*info = s->ns;
+			info.NotifyWrite("SemaStatus");
+		}
+		return hleLogSuccessI(SCEKERNEL, 0);
+	} else {
+		return hleLogError(SCEKERNEL, error);
 	}
 }
 

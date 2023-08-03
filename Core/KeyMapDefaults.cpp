@@ -13,8 +13,8 @@ namespace KeyMap {
 
 struct DefMappingStruct {
 	int pspKey;
-	int key;
-	int direction;
+	int keyOrAxis;
+	int direction;  // if 0, it's a key, otherwise an axis.
 };
 
 static const DefMappingStruct defaultQwertyKeyboardKeyMap[] = {
@@ -128,6 +128,8 @@ static const DefMappingStruct defaultXInputKeyMap[] = {
 	{VIRTKEY_SPEED_TOGGLE, NKCODE_BUTTON_THUMBR},
 	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_LTRIGGER, +1},
 	{VIRTKEY_PAUSE,        NKCODE_HOME},
+	{VIRTKEY_FASTFORWARD , JOYSTICK_AXIS_GAS, +1},
+	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_BRAKE, +1},
 };
 
 static const DefMappingStruct defaultShieldKeyMap[] = {
@@ -188,6 +190,8 @@ static const DefMappingStruct defaultAndroidXboxControllerMap[] = {
 	{CTRL_RTRIGGER       , NKCODE_BUTTON_R1},
 	{VIRTKEY_FASTFORWARD , JOYSTICK_AXIS_RTRIGGER, +1},
 	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_LTRIGGER, +1},
+	{VIRTKEY_FASTFORWARD , JOYSTICK_AXIS_GAS, +1},
+	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_BRAKE, +1},
 	{VIRTKEY_AXIS_X_MIN, JOYSTICK_AXIS_X, -1},
 	{VIRTKEY_AXIS_X_MAX, JOYSTICK_AXIS_X, +1},
 	{VIRTKEY_AXIS_Y_MIN, JOYSTICK_AXIS_Y, +1},
@@ -242,6 +246,8 @@ static const DefMappingStruct defaultPadMapAndroid[] = {
 	{VIRTKEY_FASTFORWARD , NKCODE_BUTTON_R2},
 	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_LTRIGGER, +1},
 	{VIRTKEY_PAUSE       , NKCODE_BUTTON_L2 },
+	{VIRTKEY_FASTFORWARD , JOYSTICK_AXIS_GAS, +1},
+	{VIRTKEY_PAUSE       , JOYSTICK_AXIS_BRAKE, +1},
 	{VIRTKEY_AXIS_X_MIN, JOYSTICK_AXIS_X, -1},
 	{VIRTKEY_AXIS_X_MAX, JOYSTICK_AXIS_X, +1},
 	{VIRTKEY_AXIS_Y_MIN, JOYSTICK_AXIS_Y, +1},
@@ -317,6 +323,7 @@ static const DefMappingStruct defaultVRLeftController[] = {
 	{CTRL_SELECT         , NKCODE_BUTTON_THUMBL},
 	{CTRL_LTRIGGER       , NKCODE_BUTTON_X},
 	{CTRL_RTRIGGER       , NKCODE_BUTTON_Y},
+	{CTRL_SCREEN         , NKCODE_ALT_LEFT},
 };
 
 static const DefMappingStruct defaultVRRightController[] = {
@@ -331,12 +338,12 @@ static const DefMappingStruct defaultVRRightController[] = {
 	{VIRTKEY_AXIS_X_MAX, NKCODE_DPAD_RIGHT},
 };
 
-static void SetDefaultKeyMap(int deviceId, const DefMappingStruct *array, size_t count, bool replace) {
+static void SetDefaultKeyMap(InputDeviceID deviceId, const DefMappingStruct *array, size_t count, bool replace) {
 	for (size_t i = 0; i < count; i++) {
 		if (array[i].direction == 0)
-			SetKeyMapping(array[i].pspKey, KeyDef(deviceId, array[i].key), replace);
+			SetInputMapping(array[i].pspKey, MultiInputMapping(InputMapping(deviceId, array[i].keyOrAxis)), replace);
 		else
-			SetAxisMapping(array[i].pspKey, deviceId, array[i].key, array[i].direction, replace);
+			SetInputMapping(array[i].pspKey, MultiInputMapping(InputMapping(deviceId, array[i].keyOrAxis, array[i].direction)), replace);
 	}
 	g_seenDeviceIds.insert(deviceId);
 }

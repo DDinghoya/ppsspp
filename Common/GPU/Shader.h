@@ -4,9 +4,15 @@
 #include <cstdint>
 #include <cstddef>  // for size_t
 
+#include "Common/Common.h"
+
+struct TBuiltInResource;
+void InitShaderResources(TBuiltInResource &Resources);
+
 // GLSL_1xx and GLSL_3xx each cover a lot of sub variants. All the little quirks
 // that differ are covered in ShaderLanguageDesc.
 // Defined as a bitmask so stuff like GetSupportedShaderLanguages can return combinations.
+// TODO: We can probably move away from this distinction soon, now that we mostly generate/translate shaders.
 enum ShaderLanguage {
 	GLSL_1xx = 1,
 	GLSL_3xx = 2,
@@ -29,7 +35,6 @@ enum class ShaderStage {
 };
 
 const char *ShaderStageAsString(ShaderStage lang);
-
 
 struct ShaderLanguageDesc {
 	ShaderLanguageDesc() {}
@@ -85,11 +90,23 @@ struct UniformBufferDesc {
 	std::vector<UniformDesc> uniforms;
 };
 
-struct SamplerDef {
+struct UniformDef {
+	const char *type;
 	const char *name;
-	// TODO: Might need unsigned samplers, 3d samplers, or other types in the future.
+	int index;
 };
 
+enum class SamplerFlags {
+	ARRAY_ON_VULKAN = 1,
+};
+ENUM_CLASS_BITOPS(SamplerFlags);
+
+struct SamplerDef {
+	int binding;  // Might only be used by some backends.
+	const char *name;
+	SamplerFlags flags;
+	// TODO: Might need unsigned samplers, 3d samplers, or other types in the future.
+};
 
 // For passing error messages from shader compilation (and other critical issues) back to the host.
 // This can run on any thread - be aware!
